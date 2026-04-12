@@ -15,7 +15,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version-file: go.mod
 
       - name: Build driver
         run: go build -ldflags "-X main.version=test" -o csi-driver ./cmd/
