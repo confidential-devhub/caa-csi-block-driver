@@ -1,0 +1,13 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: caa-block-azure
+parameters:
+  cloudProvider: azure
+  azureSubscriptionId: "<AZURE_SUBSCRIPTION_ID>"
+  azureResourceGroup: "<AZURE_RESOURCE_GROUP>"
+  azureLocation: eastus
+  azureDiskSKU: StandardSSD_LRS
+provisioner: caa-csi-block.csi.confidentialcontainers.io
+reclaimPolicy: Delete
+volumeBindingMode: Immediate

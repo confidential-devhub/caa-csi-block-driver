@@ -12,6 +12,7 @@ import (
 
 	// Register providers — each init() calls provider.RegisterProvider()
 	_ "github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver/pkg/provider/aws"
+	_ "github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver/pkg/provider/azure"
 	_ "github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver/pkg/provider/libvirt"
 )
 
