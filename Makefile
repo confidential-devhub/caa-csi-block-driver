@@ -1,4 +1,4 @@
-BINARY      := caa-csi-block-driver
+BINARY      := cloud-csi-adaptor
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 IMAGE_REPO  ?= cloud-csi-adaptor
 IMAGE_TAG   ?= $(VERSION)
@@ -14,7 +14,7 @@ help: ## Show this help
 
 build: ## Build the driver binary
 	@mkdir -p bin
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/
+	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/
 
 clean: ## Remove build artifacts
 	rm -rf bin/
