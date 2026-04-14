@@ -6,6 +6,14 @@ It creates and manages block volumes across multiple cloud providers and integra
 with the [Cloud API Adaptor (CAA)](https://github.com/confidential-containers/cloud-api-adaptor)
 for volume attachment to PodVMs.
 
+## Supported Providers
+
+| Provider | Backend | Authentication | Status |
+|----------|---------|----------------|--------|
+| **AWS** | EBS Volumes | IAM role or access key credentials | Supported |
+| **Azure** | Managed Disks | DefaultAzureCredential (Workload Identity, Managed Identity, env vars) | Supported |
+| **Libvirt** | Raw disk files | N/A (local) | Supported (dev/test) |
+
 ## Architecture
 
 ```
@@ -17,13 +25,11 @@ for volume attachment to PodVMs.
 │              │               │               │       │
 │          ┌───▼───┐     ┌─────▼─────┐   ┌─────▼────┐ │
 │          │  AWS  │     │  Libvirt  │   │  Azure   │ │
-│          │(EBS)  │     │ (raw disk)│   │ (future) │ │
-│          └───┬───┘     └─────┬─────┘   └──────────┘ │
-│              │               │                       │
-│              ▼               ▼                       │
-│        EBS Volume      .raw file                     │
-│              │               │                       │
-│              └───────┬───────┘                       │
+│          │(EBS)  │     │ (raw disk)│   │(Managed  │ │
+│          │       │     │           │   │  Disks)  │ │
+│          └───┬───┘     └─────┬─────┘   └────┬─────┘ │
+│              │               │              │        │
+│              └───────┬───────┴──────────────┘        │
 │                      ▼                               │
 │              mountInfo.json                          │
 │                      │                               │
@@ -53,6 +59,7 @@ for volume attachment to PodVMs.
 │       ├── interface.go    # BlockVolumeProvider interface
 │       ├── factory.go      # Provider registry and factory
 │       ├── aws/            # AWS EBS provider
+│       ├── azure/          # Azure Managed Disks provider
 │       └── libvirt/        # Libvirt raw disk provider
 ├── deploy/                 # Kubernetes manifests
 ├── hack/                   # Helper scripts
@@ -60,6 +67,14 @@ for volume attachment to PodVMs.
 ├── Dockerfile
 ├── Makefile
 └── go.mod
+```
+
+## Container Image
+
+Pre-built images are published to GHCR on every push to `main` and on version tags:
+
+```bash
+docker pull ghcr.io/confidential-devhub/cloud-csi-adaptor:main
 ```
 
 ## Building
@@ -82,16 +97,6 @@ make build GOOS=linux GOARCH=amd64
 - Kubernetes cluster with Kata Containers and CAA deployed
 - `kata-remote` RuntimeClass configured
 
-### Libvirt
-
-```bash
-kubectl apply -f deploy/namespace.yaml
-kubectl apply -f deploy/rbac.yaml
-kubectl apply -f deploy/csi-driver.yaml
-kubectl apply -f deploy/daemonset.yaml
-kubectl apply -f deploy/storageclass-libvirt.yaml
-```
-
 ### AWS (EBS)
 
 ```bash
@@ -108,6 +113,31 @@ kubectl apply -f deploy/daemonset-aws.yaml
 kubectl apply -f deploy/storageclass-aws.yaml
 ```
 
+### Azure (Managed Disks)
+
+Authentication uses `DefaultAzureCredential`, which supports Workload Identity,
+Managed Identity, and environment variables. No secrets in StorageClass parameters.
+
+```bash
+kubectl apply -f deploy/namespace.yaml
+kubectl apply -f deploy/rbac.yaml
+kubectl apply -f deploy/csi-driver.yaml
+kubectl apply -f deploy/daemonset-azure.yaml
+
+# Edit storageclass-azure.yaml with your subscription, resource group, and location
+kubectl apply -f deploy/storageclass-azure.yaml
+```
+
+### Libvirt (local development)
+
+```bash
+kubectl apply -f deploy/namespace.yaml
+kubectl apply -f deploy/rbac.yaml
+kubectl apply -f deploy/csi-driver.yaml
+kubectl apply -f deploy/daemonset.yaml
+kubectl apply -f deploy/storageclass-libvirt.yaml
+```
+
 ### Testing a Volume
 
 ```yaml
@@ -120,7 +150,7 @@ spec:
   resources:
     requests:
       storage: 1Gi
-  storageClassName: caa-block-aws   # or caa-block-libvirt
+  storageClassName: caa-block-azure   # or caa-block-aws, caa-block-libvirt
 ---
 apiVersion: v1
 kind: Pod
