@@ -1,0 +1,16 @@
+apiVersion: v2
+name: cloud-csi-adaptor
+description: A CSI block driver for Confidential Containers Peer Pods
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/confidential-devhub/cloud-csi-adaptor
+sources:
+  - https://github.com/confidential-devhub/cloud-csi-adaptor
+keywords:
+  - csi
+  - confidential-containers
+  - peer-pods
+  - storage
+maintainers:
+  - name: Mohammed Adnan

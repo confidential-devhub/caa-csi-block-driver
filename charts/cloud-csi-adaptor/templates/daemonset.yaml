@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cloud-csi-adaptor
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: cloud-csi-adaptor
+spec:
+  selector:
+    matchLabels:
+      app: cloud-csi-adaptor
+  template:
+    metadata:
+      labels:
+        app: cloud-csi-adaptor
+    spec:
+      serviceAccountName: caa-csi-provisioner
+      containers:
+        - name: csi-provisioner
+          image: {{ .Values.sidecars.provisioner.image }}
+          args:
+            - "-v=3"
+            - "--csi-address=/csi/csi.sock"
+            - "--worker-threads=5"
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+
+        - name: node-driver-registrar
+          image: {{ .Values.sidecars.nodeDriverRegistrar.image }}
+          args:
+            - "--v=3"
+            - "--csi-address=/csi/csi.sock"
+            - "--kubelet-registration-path=/var/lib/kubelet/plugins/caa-csi-block/csi.sock"
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+            - mountPath: /registration
+              name: registration-dir
+
+        - name: cloud-csi-adaptor
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--drivername={{ .Values.driverName }}"
+            - "--endpoint=unix:///csi/csi.sock"
+            - "--nodeid=$(KUBE_NODE_NAME)"
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- if eq .Values.provider "aws" }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.aws.credentialsSecret }}
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.aws.credentialsSecret }}
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_REGION
+              value: {{ .Values.aws.region | quote }}
+            {{- end }}
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+            - mountPath: /var/lib/kubelet/pods
+              name: mountpoint-dir
+              mountPropagation: Bidirectional
+            - mountPath: /var/lib/kubelet/plugins
+              name: plugins-dir
+              mountPropagation: Bidirectional
+            - mountPath: /run/kata-containers/shared/direct-volumes
+              name: shared-directvols
+            - mountPath: /var/lib/caa-csi-block
+              name: csi-data
+            {{- if eq .Values.provider "libvirt" }}
+            - mountPath: {{ .Values.libvirt.volumePath }}
+              name: libvirt-pool
+            {{- end }}
+
+      volumes:
+        - name: socket-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/caa-csi-block
+            type: DirectoryOrCreate
+        - name: mountpoint-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: DirectoryOrCreate
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: Directory
+        - name: plugins-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins
+            type: Directory
+        - name: shared-directvols
+          hostPath:
+            path: /run/kata-containers/shared/direct-volumes/
+            type: DirectoryOrCreate
+        - name: csi-data
+          hostPath:
+            path: /var/lib/caa-csi-block
+            type: DirectoryOrCreate
+        {{- if eq .Values.provider "libvirt" }}
+        - name: libvirt-pool
+          hostPath:
+            path: {{ .Values.libvirt.volumePath }}
+            type: DirectoryOrCreate
+        {{- end }}
