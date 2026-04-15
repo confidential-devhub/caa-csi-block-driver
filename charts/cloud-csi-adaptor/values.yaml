@@ -1,0 +1,47 @@
+## Cloud CSI Adaptor Helm values
+
+# Cloud provider: aws, azure, or libvirt
+provider: azure
+
+image:
+  repository: ghcr.io/confidential-devhub/cloud-csi-adaptor
+  tag: main
+  pullPolicy: IfNotPresent
+
+# CSI driver name (should not need to change)
+driverName: caa-csi-block.csi.confidentialcontainers.io
+
+# Namespace for the CSI driver
+namespace: caa-csi-block
+
+# CSI sidecar image versions
+sidecars:
+  provisioner:
+    image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.0
+  nodeDriverRegistrar:
+    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.9.0
+
+# StorageClass configuration
+storageClass:
+  name: caa-block
+  reclaimPolicy: Delete
+  volumeBindingMode: Immediate
+
+# AWS-specific settings (used when provider=aws)
+aws:
+  region: us-east-2
+  availabilityZone: us-east-2c
+  volumeType: gp3
+  # Credentials secret name (must contain AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)
+  credentialsSecret: caa-csi-aws-creds
+
+# Azure-specific settings (used when provider=azure)
+azure:
+  subscriptionId: ""
+  resourceGroup: ""
+  location: eastus
+  diskSKU: StandardSSD_LRS
+
+# Libvirt-specific settings (used when provider=libvirt)
+libvirt:
+  volumePath: /var/lib/caa-csi-volumes

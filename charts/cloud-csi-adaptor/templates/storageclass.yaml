@@ -1,0 +1,23 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClass.name }}-{{ .Values.provider }}
+parameters:
+  cloudProvider: {{ .Values.provider }}
+  {{- if eq .Values.provider "aws" }}
+  awsRegion: {{ .Values.aws.region }}
+  awsAvailabilityZone: {{ .Values.aws.availabilityZone }}
+  awsVolumeType: {{ .Values.aws.volumeType }}
+  {{- end }}
+  {{- if eq .Values.provider "azure" }}
+  azureSubscriptionId: {{ .Values.azure.subscriptionId | quote }}
+  azureResourceGroup: {{ .Values.azure.resourceGroup | quote }}
+  azureLocation: {{ .Values.azure.location }}
+  azureDiskSKU: {{ .Values.azure.diskSKU }}
+  {{- end }}
+  {{- if eq .Values.provider "libvirt" }}
+  cloudProviderVolumePath: {{ .Values.libvirt.volumePath }}
+  {{- end }}
+provisioner: {{ .Values.driverName }}
+reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
+volumeBindingMode: {{ .Values.storageClass.volumeBindingMode }}
