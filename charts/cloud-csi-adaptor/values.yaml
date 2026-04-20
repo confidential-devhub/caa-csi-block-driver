@@ -45,3 +45,13 @@ azure:
 # Libvirt-specific settings (used when provider=libvirt)
 libvirt:
   volumePath: /var/lib/caa-csi-volumes
+
+# CDH encryption settings (optional, for CDH-based LUKS encryption)
+cdh:
+  enabled: false
+  encryptionType: luks2
+  sourceType: empty
+  targetType: fileSystem
+  filesystemType: ext4
+  # KBS URI for the encryption key (e.g. kbs:///default/luks-key/volume-key)
+  key: ""

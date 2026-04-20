@@ -128,10 +128,38 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 		attrib["cloud-volume-path"] = devicePath
 	}
 
+	volumeType := "directvol"
+	fsType := "ext4"
+
+	encType := attrib["cdhEncryptionType"]
+	if encType != "" {
+		if attrib["cdhKey"] == "" {
+			return nil, status.Error(codes.InvalidArgument,
+				"cdhKey must be set when cdhEncryptionType is specified (e.g. kbs:///default/luks-key/volume-key)")
+		}
+
+		volumeType = "block-device"
+
+		if attrib["cdhSourceType"] == "" {
+			attrib["cdhSourceType"] = "empty"
+		}
+		if attrib["cdhTargetType"] == "" {
+			attrib["cdhTargetType"] = "fileSystem"
+		}
+		if attrib["cdhFilesystemType"] == "" {
+			attrib["cdhFilesystemType"] = fsType
+		}
+
+		fsType = attrib["cdhFilesystemType"]
+
+		nsLogger.Printf("NodePublishVolume: encryption enabled for %s (type=%s, source=%s, target=%s)",
+			volumeID, encType, attrib["cdhSourceType"], attrib["cdhTargetType"])
+	}
+
 	info := mountInfoJSON{
-		VolumeType: "directvol",
+		VolumeType: volumeType,
 		Device:     devicePath,
-		FsType:     "ext4",
+		FsType:     fsType,
 		Metadata:   attrib,
 	}
 
@@ -148,13 +176,12 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 		return nil, status.Errorf(codes.Internal, "failed to write mountInfo.json: %v", err)
 	}
 
-	// Also create the target path directory for kubelet
 	if err := os.MkdirAll(targetPath, 0750); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create target path %s: %v", targetPath, err)
 	}
 
-	nsLogger.Printf("NodePublishVolume: %s published at %s (device=%s, provider=%s)",
-		volumeID, targetPath, devicePath, attrib["cloud-provider"])
+	nsLogger.Printf("NodePublishVolume: %s published at %s (device=%s, provider=%s, encrypted=%t)",
+		volumeID, targetPath, devicePath, attrib["cloud-provider"], encType != "")
 
 	return &csi.NodePublishVolumeResponse{}, nil
 }
