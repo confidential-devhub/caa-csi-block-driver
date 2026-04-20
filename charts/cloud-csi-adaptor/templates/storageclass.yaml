@@ -18,6 +18,13 @@ parameters:
   {{- if eq .Values.provider "libvirt" }}
   cloudProviderVolumePath: {{ .Values.libvirt.volumePath }}
   {{- end }}
+  {{- if .Values.cdh.enabled }}
+  cdhEncryptionType: {{ .Values.cdh.encryptionType }}
+  cdhSourceType: {{ .Values.cdh.sourceType }}
+  cdhTargetType: {{ .Values.cdh.targetType }}
+  cdhFilesystemType: {{ .Values.cdh.filesystemType }}
+  cdhKey: {{ required "cdh.key must be set when cdh.enabled=true" .Values.cdh.key | quote }}
+  {{- end }}
 provisioner: {{ .Values.driverName }}
 reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
 volumeBindingMode: {{ .Values.storageClass.volumeBindingMode }}
