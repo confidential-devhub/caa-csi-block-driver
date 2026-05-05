@@ -1,12 +1,12 @@
 apiVersion: v2
-name: cloud-csi-adaptor
+name: caa-csi-block-driver
 description: A CSI block driver for Confidential Containers Peer Pods
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-home: https://github.com/confidential-devhub/cloud-csi-adaptor
+home: https://github.com/confidential-devhub/caa-csi-block-driver
 sources:
-  - https://github.com/confidential-devhub/cloud-csi-adaptor
+  - https://github.com/confidential-devhub/caa-csi-block-driver
 keywords:
   - csi
   - confidential-containers

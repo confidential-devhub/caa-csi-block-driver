@@ -60,8 +60,8 @@ spec:
             - mountPath: /registration
               name: registration-dir
 
-        - name: cloud-csi-adaptor
-          image: "<ACR_REGISTRY>/cloud-csi-adaptor:v0.3.0"
+        - name: caa-csi-block-driver
+          image: "ghcr.io/confidential-devhub/caa-csi-block-driver:main"
           args:
             - "--drivername=caa-csi-block.csi.confidentialcontainers.io"
             - "--endpoint=unix:///csi/csi.sock"

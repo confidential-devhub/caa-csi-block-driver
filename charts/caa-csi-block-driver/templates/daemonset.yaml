@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: cloud-csi-adaptor
+  name: caa-csi-block-driver
   namespace: {{ .Values.namespace }}
   labels:
-    app: cloud-csi-adaptor
+    app: caa-csi-block-driver
 spec:
   selector:
     matchLabels:
-      app: cloud-csi-adaptor
+      app: caa-csi-block-driver
   template:
     metadata:
       labels:
-        app: cloud-csi-adaptor
+        app: caa-csi-block-driver
     spec:
       serviceAccountName: caa-csi-provisioner
       containers:
@@ -60,7 +60,7 @@ spec:
             - mountPath: /registration
               name: registration-dir
 
-        - name: cloud-csi-adaptor
+        - name: caa-csi-block-driver
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:

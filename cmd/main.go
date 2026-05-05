@@ -8,12 +8,12 @@ import (
 	"log"
 	"os"
 
-	"github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver/pkg/driver"
+	"github.com/confidential-devhub/caa-csi-block-driver/pkg/driver"
 
 	// Register providers — each init() calls provider.RegisterProvider()
-	_ "github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver/pkg/provider/aws"
-	_ "github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver/pkg/provider/azure"
-	_ "github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver/pkg/provider/libvirt"
+	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/aws"
+	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/azure"
+	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/libvirt"
 )
 
 var version = "0.1.0"
@@ -29,7 +29,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		log.Printf("cloud-csi-adaptor %s", version)
+		log.Printf("caa-csi-block-driver %s", version)
 		os.Exit(0)
 	}
 
@@ -45,7 +45,7 @@ func main() {
 		log.Fatalf("Failed to create driver: %v", err)
 	}
 
-	log.Printf("Starting cloud-csi-adaptor %s", version)
+	log.Printf("Starting caa-csi-block-driver %s", version)
 	if err := drv.Run(); err != nil {
 		log.Fatalf("Driver failed: %v", err)
 	}

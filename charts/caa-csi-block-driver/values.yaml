@@ -1,10 +1,10 @@
-## Cloud CSI Adaptor Helm values
+## CAA CSI Block Driver Helm values
 
 # Cloud provider: aws, azure, or libvirt
 provider: azure
 
 image:
-  repository: ghcr.io/confidential-devhub/cloud-csi-adaptor
+  repository: ghcr.io/confidential-devhub/caa-csi-block-driver
   tag: main
   pullPolicy: IfNotPresent
 

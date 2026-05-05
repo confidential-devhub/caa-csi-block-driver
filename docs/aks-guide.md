@@ -132,7 +132,7 @@ kubectl annotate serviceaccount caa-csi-provisioner \
 ## 6. Deploy the CSI Driver
 
 ```bash
-helm install cloud-csi-adaptor ./charts/cloud-csi-adaptor \
+helm install caa-csi-block-driver ./charts/caa-csi-block-driver \
   --set provider=azure \
   --set azure.subscriptionId=$SUBSCRIPTION_ID \
   --set azure.resourceGroup=$RESOURCE_GROUP \
@@ -150,7 +150,7 @@ kubectl annotate serviceaccount caa-csi-provisioner \
 Add the Workload Identity label to the DaemonSet pods:
 
 ```bash
-kubectl patch daemonset cloud-csi-adaptor -n caa-csi-block \
+kubectl patch daemonset caa-csi-block-driver -n caa-csi-block \
   --type merge \
   -p '{"spec":{"template":{"metadata":{"labels":{"azure.workload.identity/use":"true"}}}}}'
 ```
@@ -243,7 +243,7 @@ az disk list --resource-group $RESOURCE_GROUP --query "[?tags.\"caa-csi-volume-i
 ```bash
 kubectl delete pod test-csi-pod
 kubectl delete pvc test-csi-pvc
-helm uninstall cloud-csi-adaptor    # if installed via Helm
+helm uninstall caa-csi-block-driver    # if installed via Helm
 az aks delete --name $CLUSTER_NAME --resource-group $RESOURCE_GROUP --yes --no-wait
 az group delete --name $RESOURCE_GROUP --yes --no-wait
 ```
@@ -255,7 +255,7 @@ az group delete --name $RESOURCE_GROUP --yes --no-wait
 Check the logs:
 
 ```bash
-kubectl logs -n caa-csi-block -l app=cloud-csi-adaptor -c cloud-csi-adaptor
+kubectl logs -n caa-csi-block -l app=caa-csi-block-driver -c caa-csi-block-driver
 ```
 
 Common causes:
@@ -268,7 +268,7 @@ Check the CSI driver logs and events:
 
 ```bash
 kubectl describe pvc test-csi-pvc
-kubectl logs -n caa-csi-block -l app=cloud-csi-adaptor -c cloud-csi-adaptor
+kubectl logs -n caa-csi-block -l app=caa-csi-block-driver -c caa-csi-block-driver
 ```
 
 ### Pod stuck in Pending with "Insufficient kata.peerpods.io/vm"

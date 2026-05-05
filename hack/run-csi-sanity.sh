@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BINARY="$ROOT_DIR/bin/cloud-csi-adaptor"
+BINARY="$ROOT_DIR/bin/caa-csi-block-driver"
 TEST_DIR=$(mktemp -d /tmp/csi-sanity-XXXXXX)
 
 cleanup() {

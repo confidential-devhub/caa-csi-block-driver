@@ -1,4 +1,4 @@
-# Cloud CSI Adaptor
+# CAA CSI Block Driver
 
 A lightweight, pluggable CSI (Container Storage Interface) block driver for
 [Confidential Containers](https://github.com/confidential-containers) Peer Pods.
@@ -19,7 +19,7 @@ for volume attachment to PodVMs.
 ```
 ┌──────────────────────────────────────────────────────┐
 │                  Kubernetes                          │
-│  PVC ──► StorageClass ──► cloud-csi-adaptor          │
+│  PVC ──► StorageClass ──► caa-csi-block-driver        │
 │                              │                       │
 │              ┌───────────────┼───────────────┐       │
 │              │               │               │       │
@@ -74,7 +74,7 @@ for volume attachment to PodVMs.
 Pre-built images are published to GHCR on every push to `main` and on version tags:
 
 ```bash
-docker pull ghcr.io/confidential-devhub/cloud-csi-adaptor:main
+docker pull ghcr.io/confidential-devhub/caa-csi-block-driver:main
 ```
 
 ## Building
@@ -197,7 +197,7 @@ func init() {
 Import the package in `cmd/main.go`:
 
 ```go
-_ "github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver/pkg/provider/myprovider"
+_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/myprovider"
 ```
 
 ## Testing
