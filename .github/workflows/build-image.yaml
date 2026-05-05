@@ -28,7 +28,7 @@ jobs:
       - name: Build binary
         run: |
           mkdir -p bin
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version=${{ github.ref_name }}" -o bin/cloud-csi-adaptor ./cmd/
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version=${{ github.ref_name }}" -o bin/caa-csi-block-driver ./cmd/
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'

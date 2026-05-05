@@ -258,14 +258,14 @@ oc get pods -n openshift-sandboxed-containers-operator -l name=osc-caa-ds
 ### Install via Helm
 
 ```bash
-helm install cloud-csi-adaptor ./charts/cloud-csi-adaptor \
+helm install caa-csi-block-driver ./charts/caa-csi-block-driver \
   --set provider=azure \
   --set azure.subscriptionId=$SUBSCRIPTION_ID \
   --set azure.resourceGroup=$RESOURCE_GROUP \
   --set azure.location=$LOCATION
 ```
 
-> Replace `./charts/cloud-csi-adaptor` with the path to your local clone of the [cloud-csi-adaptor](https://github.com/confidential-devhub/cloud-csi-adaptor) repository.
+> Replace `./charts/caa-csi-block-driver` with the path to your local clone of the [caa-csi-block-driver](https://github.com/confidential-devhub/caa-csi-block-driver) repository.
 
 ### Grant privileged SCC
 
@@ -285,8 +285,8 @@ oc create secret generic csi-azure-creds \
   --from-literal=AZURE_CLIENT_ID=$SP_APP_ID \
   --from-literal=AZURE_CLIENT_SECRET=$SP_PASSWORD
 
-oc set env ds/cloud-csi-adaptor -n caa-csi-block \
-  --from=secret/csi-azure-creds -c cloud-csi-adaptor
+oc set env ds/caa-csi-block-driver -n caa-csi-block \
+  --from=secret/csi-azure-creds -c caa-csi-block-driver
 ```
 
 Verify the CSI driver pods are running:
@@ -372,7 +372,7 @@ az disk list --resource-group $RESOURCE_GROUP --output table
 ```bash
 oc delete pod test-csi-pod
 oc delete pvc test-csi-pvc
-helm uninstall cloud-csi-adaptor
+helm uninstall caa-csi-block-driver
 oc delete kataconfig example-kataconfig
 az aro delete --name $CLUSTER_NAME --resource-group $RESOURCE_GROUP --yes
 az group delete --name $RESOURCE_GROUP --yes --no-wait
@@ -391,7 +391,7 @@ oc create secret docker-registry registry-secret \
   --docker-password=<token> \
   -n caa-csi-block
 
-oc patch ds cloud-csi-adaptor -n caa-csi-block --type=json \
+oc patch ds caa-csi-block-driver -n caa-csi-block --type=json \
   -p='[{"op":"add","path":"/spec/template/spec/imagePullSecrets","value":[{"name":"registry-secret"}]}]'
 ```
 
@@ -423,7 +423,7 @@ Check the CSI driver logs for authentication errors:
 
 ```bash
 oc describe pvc test-csi-pvc
-oc logs -n caa-csi-block -l app=cloud-csi-adaptor -c cloud-csi-adaptor
+oc logs -n caa-csi-block -l app=caa-csi-block-driver -c caa-csi-block-driver
 ```
 
 Common causes:

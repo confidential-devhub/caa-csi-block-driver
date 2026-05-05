@@ -12,7 +12,7 @@ import (
 
 	diskfs "github.com/diskfs/go-diskfs"
 
-	provider "github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver/pkg/provider"
+	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
 
 var logger = log.New(log.Writer(), "[caa-csi/libvirt] ", log.LstdFlags|log.Lmsgprefix)

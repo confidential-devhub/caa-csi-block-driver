@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	provider "github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver/pkg/provider"
+	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
 
 var nsLogger = log.New(log.Writer(), "[caa-csi/node] ", log.LstdFlags|log.Lmsgprefix)

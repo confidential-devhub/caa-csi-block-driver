@@ -19,7 +19,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v5"
 
-	provider "github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver/pkg/provider"
+	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
 
 var logger = log.New(log.Writer(), "[caa-csi/azure] ", log.LstdFlags|log.Lmsgprefix)

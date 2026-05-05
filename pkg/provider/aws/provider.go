@@ -15,7 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
-	provider "github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver/pkg/provider"
+	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
 
 var logger = log.New(log.Writer(), "[caa-csi/aws] ", log.LstdFlags|log.Lmsgprefix)

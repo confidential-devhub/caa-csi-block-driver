@@ -1,6 +1,6 @@
-BINARY      := cloud-csi-adaptor
+BINARY      := caa-csi-block-driver
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-IMAGE_REPO  ?= cloud-csi-adaptor
+IMAGE_REPO  ?= caa-csi-block-driver
 IMAGE_TAG   ?= $(VERSION)
 GOOS        ?= linux
 GOARCH      ?= amd64

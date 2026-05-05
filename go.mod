@@ -1,4 +1,4 @@
-module github.com/confidential-containers/cloud-api-adaptor/src/caa-csi-block-driver
+module github.com/confidential-devhub/caa-csi-block-driver
 
 go 1.24.0
 
