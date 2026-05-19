@@ -134,3 +134,40 @@ func (p *LibvirtProvider) VolumeExists(volumeID string) (bool, error) {
 	}
 	return false, fmt.Errorf("failed to check volume %s: %w", volPath, err)
 }
+
+func (p *LibvirtProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+	return nil, fmt.Errorf("snapshot %s not found: libvirt provider does not support snapshots", snapshotID)
+}
+
+func (p *LibvirtProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+	srcPath := p.volumePath(sourceVolumeID)
+	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("source volume %s not found at %s", sourceVolumeID, srcPath)
+	}
+
+	dstPath := p.volumePath(volumeID)
+	src, err := os.ReadFile(srcPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read source volume %s: %w", srcPath, err)
+	}
+	if err := os.WriteFile(dstPath, src, 0600); err != nil {
+		return nil, fmt.Errorf("failed to write cloned volume %s: %w", dstPath, err)
+	}
+	if sizeBytes > int64(len(src)) {
+		if err := os.Truncate(dstPath, sizeBytes); err != nil {
+			return nil, fmt.Errorf("failed to resize cloned volume: %w", err)
+		}
+	}
+
+	logger.Printf("Cloned volume %s from %s", volumeID, sourceVolumeID)
+	return &provider.VolumeInfo{
+		VolumeID:  volumeID,
+		Path:      dstPath,
+		SizeBytes: sizeBytes,
+		Provider:  "libvirt",
+		Metadata: map[string]string{
+			"cloud-volume-path": dstPath,
+			"cloud-provider":    "libvirt",
+		},
+	}, nil
+}

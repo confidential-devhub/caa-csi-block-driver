@@ -94,18 +94,32 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 			snapID := src.GetSnapshot().GetSnapshotId()
 			csLogger.Printf("CreateVolume: %s from snapshot %s", req.GetName(), snapID)
 			volInfo, err = cloner.CreateVolumeFromSnapshot(req.GetName(), snapID, capacity)
+			if err != nil {
+				errMsg := strings.ToLower(err.Error())
+				if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "not exist") || strings.Contains(errMsg, "no such") {
+					return nil, status.Errorf(codes.NotFound, "source snapshot %s not found: %v", snapID, err)
+				}
+				return nil, status.Errorf(codes.Internal, "CreateVolumeFromSnapshot failed: %v", err)
+			}
 		case src.GetVolume() != nil:
 			srcVolID := src.GetVolume().GetVolumeId()
 			csLogger.Printf("CreateVolume: %s cloned from volume %s", req.GetName(), srcVolID)
 			volInfo, err = cloner.CreateVolumeFromVolume(req.GetName(), srcVolID, capacity)
+			if err != nil {
+				errMsg := strings.ToLower(err.Error())
+				if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "not exist") || strings.Contains(errMsg, "no such") {
+					return nil, status.Errorf(codes.NotFound, "source volume %s not found: %v", srcVolID, err)
+				}
+				return nil, status.Errorf(codes.Internal, "CreateVolumeFromVolume failed: %v", err)
+			}
 		default:
 			return nil, status.Error(codes.InvalidArgument, "unsupported VolumeContentSource type")
 		}
 	} else {
 		volInfo, err = p.CreateVolume(req.GetName(), capacity)
-	}
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "provider.CreateVolume failed: %v", err)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "provider.CreateVolume failed: %v", err)
+		}
 	}
 
 	if err := cs.store.Save(&volumeRecord{
