@@ -54,9 +54,61 @@ type nodeServer struct {
 }
 
 func newNodeServer(nodeID string) *nodeServer {
-	return &nodeServer{
+	ns := &nodeServer{
 		nodeID:  nodeID,
 		devices: make(map[string]string),
+	}
+	ns.cleanStaleMountInfoFiles()
+	return ns
+}
+
+// cleanStaleMountInfoFiles removes leftover mountInfo.json entries from
+// the kata direct-volumes directory that have no corresponding volume
+// in the volume store. This prevents stale entries (from force-deleted
+// pods or missed NodeUnpublish calls) from causing orphan disk
+// attachments on the next pod creation.
+func (ns *nodeServer) cleanStaleMountInfoFiles() {
+	root := getKataDirectVolumeRootPath()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+
+	store := newVolumeStore()
+	removed := 0
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		infoPath := filepath.Join(root, e.Name(), mountInfoFileName)
+		data, err := os.ReadFile(infoPath)
+		if err != nil {
+			continue
+		}
+
+		var info mountInfoJSON
+		if err := json.Unmarshal(data, &info); err != nil {
+			nsLogger.Printf("Removing corrupt mountInfo dir: %s", e.Name())
+			os.RemoveAll(filepath.Join(root, e.Name()))
+			removed++
+			continue
+		}
+
+		volID := info.Metadata["cloud-volume-id"]
+		if volID == "" {
+			continue
+		}
+
+		if !store.Exists(volID) {
+			nsLogger.Printf("Removing stale mountInfo for volume %s (no matching volume record)", volID)
+			os.RemoveAll(filepath.Join(root, e.Name()))
+			removed++
+		}
+	}
+
+	if removed > 0 {
+		nsLogger.Printf("Cleaned up %d stale mountInfo entr(ies) on startup", removed)
 	}
 }
 

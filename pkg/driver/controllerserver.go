@@ -131,6 +131,7 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 	}); err != nil {
 		csLogger.Printf("WARNING: failed to persist volume record for %s: %v (volume created in cloud but record may be lost)", req.GetName(), err)
 	}
+	cs.store.WriteManifest()
 	csLogger.Printf("CreateVolume: %s (provider=%s, path=%s)", req.GetName(), volInfo.Provider, volInfo.Path)
 
 	volumeCtx := map[string]string{
@@ -186,6 +187,7 @@ func (cs *controllerServer) DeleteVolume(_ context.Context, req *csi.DeleteVolum
 	}
 
 	cs.store.Delete(volumeID)
+	cs.store.WriteManifest()
 	csLogger.Printf("DeleteVolume: %s deleted", volumeID)
 	return &csi.DeleteVolumeResponse{}, nil
 }

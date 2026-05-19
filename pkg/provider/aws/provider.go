@@ -345,6 +345,9 @@ func (p *AWSProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, size
 
 // CreateVolumeFromVolume creates a new EBS volume by first taking a
 // snapshot of the source, then creating from that snapshot.
+// The temporary snapshot is tagged with "caa-csi-temp-snapshot=true"
+// and a TTL so that orphaned snapshots can be garbage-collected on
+// next startup or by an external cleanup process.
 func (p *AWSProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	tempSnapID := "clone-" + volumeID
 	logger.Printf("Cloning volume %s → %s via temporary snapshot %s", sourceVolumeID, volumeID, tempSnapID)
@@ -357,6 +360,20 @@ func (p *AWSProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, si
 	ctx := context.TODO()
 	ebsSnapID, _ := p.findEBSSnapshotID(tempSnapID)
 	if ebsSnapID != "" {
+		// Tag the temp snapshot for garbage collection in case we crash
+		// before the deferred cleanup goroutine runs.
+		ttl := time.Now().UTC().Add(1 * time.Hour).Format(time.RFC3339)
+		_, tagErr := p.ec2Client.CreateTags(ctx, &ec2.CreateTagsInput{
+			Resources: []string{ebsSnapID},
+			Tags: []ec2types.Tag{
+				{Key: aws.String("caa-csi-temp-snapshot"), Value: aws.String("true")},
+				{Key: aws.String("caa-csi-temp-ttl"), Value: aws.String(ttl)},
+			},
+		})
+		if tagErr != nil {
+			logger.Printf("WARNING: failed to tag temp snapshot %s for GC: %v", ebsSnapID, tagErr)
+		}
+
 		snapWaiter := ec2.NewSnapshotCompletedWaiter(p.ec2Client)
 		if err := snapWaiter.Wait(ctx, &ec2.DescribeSnapshotsInput{
 			SnapshotIds: []string{ebsSnapID},
@@ -379,6 +396,54 @@ func (p *AWSProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, si
 	}()
 
 	return volInfo, nil
+}
+
+// CleanupOrphanedTempSnapshots deletes any EBS snapshots tagged as
+// temporary (caa-csi-temp-snapshot=true) whose TTL has expired.
+// Call this on provider startup to reclaim leaked temp snapshots.
+func (p *AWSProvider) CleanupOrphanedTempSnapshots() {
+	ctx := context.TODO()
+	result, err := p.ec2Client.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("tag:caa-csi-temp-snapshot"), Values: []string{"true"}},
+		},
+	})
+	if err != nil {
+		logger.Printf("WARNING: failed to list temp snapshots for cleanup: %v", err)
+		return
+	}
+
+	now := time.Now().UTC()
+	cleaned := 0
+	for _, snap := range result.Snapshots {
+		var ttlStr string
+		for _, t := range snap.Tags {
+			if aws.ToString(t.Key) == "caa-csi-temp-ttl" {
+				ttlStr = aws.ToString(t.Value)
+			}
+		}
+		if ttlStr == "" {
+			continue
+		}
+		ttl, err := time.Parse(time.RFC3339, ttlStr)
+		if err != nil {
+			continue
+		}
+		if now.After(ttl) {
+			snapID := aws.ToString(snap.SnapshotId)
+			logger.Printf("Cleaning up orphaned temp snapshot %s (TTL %s expired)", snapID, ttlStr)
+			if _, err := p.ec2Client.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{
+				SnapshotId: aws.String(snapID),
+			}); err != nil {
+				logger.Printf("WARNING: failed to delete orphaned temp snapshot %s: %v", snapID, err)
+			} else {
+				cleaned++
+			}
+		}
+	}
+	if cleaned > 0 {
+		logger.Printf("Cleaned up %d orphaned temp snapshot(s)", cleaned)
+	}
 }
 
 // CreateSnapshot creates an EBS snapshot from the given volume.

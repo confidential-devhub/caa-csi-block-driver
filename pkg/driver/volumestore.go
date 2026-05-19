@@ -174,3 +174,52 @@ func (vs *volumeStore) listAll() ([]*volumeRecord, error) {
 	}
 	return recs, nil
 }
+
+// AllVolumeIDs returns the IDs of all volumes tracked in the store.
+func (vs *volumeStore) AllVolumeIDs() []string {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	recs, err := vs.listAll()
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(recs))
+	for _, r := range recs {
+		ids = append(ids, r.VolumeID)
+	}
+	return ids
+}
+
+// WriteManifest writes a summary file listing all known volume IDs and
+// the cloud provider params. This acts as a lightweight backup that
+// RecoverFromCloud can use even if the individual JSON records are lost
+// (e.g. after a node replacement). The manifest is written alongside
+// the per-volume JSON files.
+func (vs *volumeStore) WriteManifest() {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	recs, err := vs.listAll()
+	if err != nil || len(recs) == 0 {
+		return
+	}
+
+	type manifest struct {
+		Params    map[string]string `json:"params"`
+		VolumeIDs []string          `json:"volumeIDs"`
+	}
+
+	m := manifest{Params: recs[0].Params}
+	for _, r := range recs {
+		m.VolumeIDs = append(m.VolumeIDs, r.VolumeID)
+	}
+
+	data, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	path := filepath.Join(vs.dir, "_manifest.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		vsLogger.Printf("WARNING: failed to write volume manifest: %v", err)
+	}
+}

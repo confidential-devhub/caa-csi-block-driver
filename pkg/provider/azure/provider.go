@@ -540,7 +540,11 @@ func (p *AzureProvider) DeleteSnapshot(snapshotID string) error {
 	return nil
 }
 
-// ListSnapshots lists all Azure snapshots for the given volume.
+// ListSnapshots lists Azure snapshots for the given volume. The ARM
+// Snapshots API does not support server-side tag or name-prefix
+// filtering, so we iterate the resource group and filter client-side.
+// We skip snapshots early based on the "csi-snap-" name prefix to
+// minimise allocations and tag parsing.
 func (p *AzureProvider) ListSnapshots(volumeID string) ([]*provider.SnapshotInfo, error) {
 	ctx := context.TODO()
 
@@ -558,7 +562,7 @@ func (p *AzureProvider) ListSnapshots(volumeID string) ([]*provider.SnapshotInfo
 			return nil, fmt.Errorf("listing snapshots: %w", err)
 		}
 		for _, s := range page.Value {
-			if s.Name != nil && !strings.HasPrefix(*s.Name, "csi-snap-") {
+			if s.Name == nil || !strings.HasPrefix(*s.Name, "csi-snap-") {
 				continue
 			}
 			if s.Tags == nil {
