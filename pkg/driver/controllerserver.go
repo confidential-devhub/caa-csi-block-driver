@@ -27,8 +27,18 @@ type controllerServer struct {
 }
 
 func newControllerServer() *controllerServer {
+	store := newVolumeStore()
+
+	if params := store.AnyParams(); params != nil {
+		if err := store.RecoverFromCloud(params); err != nil {
+			csLogger.Printf("WARNING: cloud recovery failed (non-fatal): %v", err)
+		}
+	} else {
+		csLogger.Printf("No existing volumes in store, skipping cloud recovery")
+	}
+
 	return &controllerServer{
-		store: newVolumeStore(),
+		store: store,
 	}
 }
 
@@ -129,6 +139,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}); err != nil {
 		csLogger.Printf("WARNING: failed to persist volume record for %s: %v (volume created in cloud but record may be lost)", req.GetName(), err)
 	}
+	cs.store.WriteManifest()
 	csLogger.Printf("CreateVolume: %s (provider=%s, path=%s)", req.GetName(), volInfo.Provider, volInfo.Path)
 
 	volumeCtx := map[string]string{
@@ -180,6 +191,7 @@ func (cs *controllerServer) DeleteVolume(_ context.Context, req *csi.DeleteVolum
 	}
 
 	cs.store.Delete(volumeID)
+	cs.store.WriteManifest()
 	csLogger.Printf("DeleteVolume: %s deleted", volumeID)
 	return &csi.DeleteVolumeResponse{}, nil
 }

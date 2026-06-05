@@ -504,6 +504,50 @@ func (p *AWSProvider) ebsSnapshotToInfo(s *ec2types.Snapshot) *provider.Snapshot
 	}
 }
 
+// ListManagedVolumes returns all EBS volumes tagged with our CSI tag.
+func (p *AWSProvider) ListManagedVolumes() ([]*provider.VolumeInfo, error) {
+	ctx := context.TODO()
+
+	result, err := p.ec2Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("tag-key"),
+				Values: []string{volumeTagKey},
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ec2.DescribeVolumes for recovery failed: %w", err)
+	}
+
+	var vols []*provider.VolumeInfo
+	for _, vol := range result.Volumes {
+		csiVolumeID := ""
+		for _, tag := range vol.Tags {
+			if aws.ToString(tag.Key) == volumeTagKey {
+				csiVolumeID = aws.ToString(tag.Value)
+			}
+		}
+		if csiVolumeID == "" {
+			continue
+		}
+		ebsID := aws.ToString(vol.VolumeId)
+		vols = append(vols, &provider.VolumeInfo{
+			VolumeID:  csiVolumeID,
+			Path:      ebsID,
+			SizeBytes: int64(aws.ToInt32(vol.Size)) * 1024 * 1024 * 1024,
+			Provider:  "aws",
+			Metadata: map[string]string{
+				"cloud-volume-path": ebsID,
+				"cloud-provider":    "aws",
+				"ebs-volume-id":     ebsID,
+				"availability-zone": aws.ToString(vol.AvailabilityZone),
+			},
+		})
+	}
+	return vols, nil
+}
+
 // CreateVolumeFromSnapshot creates a new EBS volume from an existing snapshot.
 func (p *AWSProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	ctx := context.TODO()

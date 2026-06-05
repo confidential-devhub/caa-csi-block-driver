@@ -381,6 +381,51 @@ func (p *AzureProvider) ExpandVolume(volumeID string, newSizeBytes int64) error 
 	return nil
 }
 
+func (p *AzureProvider) ListManagedVolumes() ([]*provider.VolumeInfo, error) {
+	ctx := context.TODO()
+
+	pager := p.disksClient.NewListByResourceGroupPager(p.config.ResourceGroup, nil)
+	var vols []*provider.VolumeInfo
+
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("listing disks for recovery: %w", err)
+		}
+		for _, d := range page.Value {
+			if d.Tags == nil {
+				continue
+			}
+			tagVal, ok := d.Tags[volumeTagKey]
+			if !ok || tagVal == nil {
+				continue
+			}
+			csiVolumeID := *tagVal
+			diskID := ""
+			if d.ID != nil {
+				diskID = *d.ID
+			}
+			var sizeBytes int64
+			if d.Properties != nil && d.Properties.DiskSizeGB != nil {
+				sizeBytes = int64(*d.Properties.DiskSizeGB) * 1024 * 1024 * 1024
+			}
+			vols = append(vols, &provider.VolumeInfo{
+				VolumeID:  csiVolumeID,
+				Path:      diskID,
+				SizeBytes: sizeBytes,
+				Provider:  "azure",
+				Metadata: map[string]string{
+					"cloud-volume-path": diskID,
+					"cloud-provider":    "azure",
+					"azure-disk-name":   p.diskName(csiVolumeID),
+					"azure-resource-id": diskID,
+				},
+			})
+		}
+	}
+	return vols, nil
+}
+
 func (p *AzureProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
 	defer cancel()
