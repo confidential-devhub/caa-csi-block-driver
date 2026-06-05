@@ -341,6 +341,121 @@ func (p *AzureProvider) ExpandVolume(volumeID string, newSizeBytes int64) error 
 	return nil
 }
 
+// CreateVolumeFromSnapshot creates a new Azure Managed Disk from an existing snapshot.
+func (p *AzureProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+	ctx := context.TODO()
+	name := p.diskName(volumeID)
+	snapName := "csi-snap-" + snapshotID
+
+	sizeGiB := int32(sizeBytes / (1024 * 1024 * 1024))
+	if sizeGiB == 0 {
+		sizeGiB = 1
+	}
+
+	snapResourceID := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Compute/snapshots/%s",
+		p.config.SubscriptionID, p.config.ResourceGroup, snapName)
+
+	logger.Printf("Creating Azure Managed Disk %s from snapshot %s (%d GiB)", name, snapName, sizeGiB)
+
+	disk := armcompute.Disk{
+		Location: to.Ptr(p.config.Location),
+		SKU: &armcompute.DiskSKU{
+			Name: to.Ptr(armcompute.DiskStorageAccountTypes(p.config.DiskSKU)),
+		},
+		Properties: &armcompute.DiskProperties{
+			CreationData: &armcompute.CreationData{
+				CreateOption:     to.Ptr(armcompute.DiskCreateOptionCopy),
+				SourceResourceID: to.Ptr(snapResourceID),
+			},
+			DiskSizeGB: to.Ptr(sizeGiB),
+		},
+		Tags: map[string]*string{
+			volumeTagKey:      to.Ptr(volumeID),
+			"source-snapshot": to.Ptr(snapshotID),
+		},
+	}
+
+	poller, err := p.disksClient.BeginCreateOrUpdate(ctx, p.config.ResourceGroup, name, disk, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin creating disk from snapshot %s: %w", snapName, err)
+	}
+	result, err := poller.PollUntilDone(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create disk from snapshot %s: %w", snapName, err)
+	}
+
+	diskID := *result.ID
+	return &provider.VolumeInfo{
+		VolumeID:  volumeID,
+		Path:      diskID,
+		SizeBytes: sizeBytes,
+		Provider:  "azure",
+		Metadata: map[string]string{
+			"cloud-volume-path": diskID,
+			"cloud-provider":    "azure",
+			"azure-disk-name":   name,
+			"source-snapshot":   snapshotID,
+		},
+	}, nil
+}
+
+// CreateVolumeFromVolume creates a new Azure Managed Disk by copying
+// directly from the source disk.
+func (p *AzureProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+	ctx := context.TODO()
+	name := p.diskName(volumeID)
+	sourceName := p.diskName(sourceVolumeID)
+
+	sizeGiB := int32(sizeBytes / (1024 * 1024 * 1024))
+	if sizeGiB == 0 {
+		sizeGiB = 1
+	}
+
+	sourceResourceID := p.diskResourceID(sourceName)
+	logger.Printf("Cloning Azure Managed Disk %s → %s (%d GiB)", sourceName, name, sizeGiB)
+
+	disk := armcompute.Disk{
+		Location: to.Ptr(p.config.Location),
+		SKU: &armcompute.DiskSKU{
+			Name: to.Ptr(armcompute.DiskStorageAccountTypes(p.config.DiskSKU)),
+		},
+		Properties: &armcompute.DiskProperties{
+			CreationData: &armcompute.CreationData{
+				CreateOption:     to.Ptr(armcompute.DiskCreateOptionCopy),
+				SourceResourceID: to.Ptr(sourceResourceID),
+			},
+			DiskSizeGB: to.Ptr(sizeGiB),
+		},
+		Tags: map[string]*string{
+			volumeTagKey:    to.Ptr(volumeID),
+			"source-volume": to.Ptr(sourceVolumeID),
+		},
+	}
+
+	poller, err := p.disksClient.BeginCreateOrUpdate(ctx, p.config.ResourceGroup, name, disk, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin cloning disk %s: %w", sourceName, err)
+	}
+	result, err := poller.PollUntilDone(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to clone disk %s: %w", sourceName, err)
+	}
+
+	diskID := *result.ID
+	return &provider.VolumeInfo{
+		VolumeID:  volumeID,
+		Path:      diskID,
+		SizeBytes: sizeBytes,
+		Provider:  "azure",
+		Metadata: map[string]string{
+			"cloud-volume-path": diskID,
+			"cloud-provider":    "azure",
+			"azure-disk-name":   name,
+			"source-volume":     sourceVolumeID,
+		},
+	}, nil
+}
+
 // CreateSnapshot creates an Azure snapshot from the given volume.
 func (p *AzureProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID string) (*provider.SnapshotInfo, error) {
 
