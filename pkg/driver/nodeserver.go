@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -67,9 +68,6 @@ func (ns *nodeServer) NodeStageVolume(_ context.Context, req *csi.NodeStageVolum
 		return nil, status.Error(codes.InvalidArgument, "Volume capability missing")
 	}
 
-	ns.mu.Lock()
-	defer ns.mu.Unlock()
-
 	params := req.GetVolumeContext()
 
 	p, err := provider.NewBlockVolumeProvider(params)
@@ -77,11 +75,12 @@ func (ns *nodeServer) NodeStageVolume(_ context.Context, req *csi.NodeStageVolum
 		return nil, status.Errorf(codes.Internal, "failed to create provider: %v", err)
 	}
 
-	capacityStr := params["capacity_in_bytes"]
 	var sizeBytes int64 = 1073741824
-	if capacityStr != "" {
-		for _, c := range capacityStr {
-			sizeBytes = sizeBytes*10 + int64(c-'0')
+	if capacityStr := params["capacity_in_bytes"]; capacityStr != "" {
+		if parsed, err := strconv.ParseInt(capacityStr, 10, 64); err == nil && parsed > 0 {
+			sizeBytes = parsed
+		} else {
+			nsLogger.Printf("WARNING: invalid capacity_in_bytes %q, using default 1GiB", capacityStr)
 		}
 	}
 
@@ -90,7 +89,9 @@ func (ns *nodeServer) NodeStageVolume(_ context.Context, req *csi.NodeStageVolum
 		return nil, status.Errorf(codes.Internal, "provider.CreateVolume failed: %v", err)
 	}
 
+	ns.mu.Lock()
 	ns.devices[volumeID] = volInfo.Path
+	ns.mu.Unlock()
 	nsLogger.Printf("NodeStageVolume: %s staged (provider=%s, path=%s)", volumeID, volInfo.Provider, volInfo.Path)
 
 	return &csi.NodeStageVolumeResponse{}, nil
@@ -128,38 +129,10 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 		attrib["cloud-volume-path"] = devicePath
 	}
 
-	volumeType := "directvol"
-	fsType := "ext4"
-
-	encType := attrib["cdhEncryptionType"]
-	if encType != "" {
-		if attrib["cdhKey"] == "" {
-			return nil, status.Error(codes.InvalidArgument,
-				"cdhKey must be set when cdhEncryptionType is specified (e.g. kbs:///default/luks-key/volume-key)")
-		}
-
-		volumeType = "block-device"
-
-		if attrib["cdhSourceType"] == "" {
-			attrib["cdhSourceType"] = "empty"
-		}
-		if attrib["cdhTargetType"] == "" {
-			attrib["cdhTargetType"] = "fileSystem"
-		}
-		if attrib["cdhFilesystemType"] == "" {
-			attrib["cdhFilesystemType"] = fsType
-		}
-
-		fsType = attrib["cdhFilesystemType"]
-
-		nsLogger.Printf("NodePublishVolume: encryption enabled for %s (type=%s, source=%s, target=%s)",
-			volumeID, encType, attrib["cdhSourceType"], attrib["cdhTargetType"])
-	}
-
 	info := mountInfoJSON{
-		VolumeType: volumeType,
+		VolumeType: "directvol",
 		Device:     devicePath,
-		FsType:     fsType,
+		FsType:     "ext4",
 		Metadata:   attrib,
 	}
 
@@ -180,8 +153,8 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 		return nil, status.Errorf(codes.Internal, "failed to create target path %s: %v", targetPath, err)
 	}
 
-	nsLogger.Printf("NodePublishVolume: %s published at %s (device=%s, provider=%s, encrypted=%t)",
-		volumeID, targetPath, devicePath, attrib["cloud-provider"], encType != "")
+	nsLogger.Printf("NodePublishVolume: %s published at %s (device=%s, provider=%s)",
+		volumeID, targetPath, devicePath, attrib["cloud-provider"])
 
 	return &csi.NodePublishVolumeResponse{}, nil
 }
@@ -193,10 +166,13 @@ func (ns *nodeServer) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpubl
 	}
 
 	volumeDir := filepath.Join(getKataDirectVolumeRootPath(), b64.URLEncoding.EncodeToString([]byte(targetPath)))
-	os.RemoveAll(volumeDir)
+	if err := os.RemoveAll(volumeDir); err != nil {
+		nsLogger.Printf("WARNING: failed to remove kata direct volume dir %s: %v", volumeDir, err)
+	}
 
-	// Clean up target path
-	os.RemoveAll(targetPath)
+	if err := os.RemoveAll(targetPath); err != nil {
+		nsLogger.Printf("WARNING: failed to remove target path %s: %v", targetPath, err)
+	}
 
 	nsLogger.Printf("NodeUnpublishVolume: %s unpublished", req.GetVolumeId())
 	return &csi.NodeUnpublishVolumeResponse{}, nil

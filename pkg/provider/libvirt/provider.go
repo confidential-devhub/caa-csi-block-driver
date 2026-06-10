@@ -10,8 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	diskfs "github.com/diskfs/go-diskfs"
-
 	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
 
@@ -58,9 +56,16 @@ func (p *LibvirtProvider) CreateVolume(volumeID string, sizeBytes int64) (*provi
 	if _, err := os.Stat(volPath); os.IsNotExist(err) {
 		logger.Printf("Creating volume %s at %s (%d bytes)", volumeID, volPath, sizeBytes)
 
-		if _, err := diskfs.Create(volPath, sizeBytes, diskfs.Raw, diskfs.SectorSizeDefault); err != nil {
+		f, err := os.Create(volPath)
+		if err != nil {
 			return nil, fmt.Errorf("failed to create raw disk at %s: %w", volPath, err)
 		}
+		if err := f.Truncate(sizeBytes); err != nil {
+			f.Close()
+			os.Remove(volPath)
+			return nil, fmt.Errorf("failed to allocate %d bytes for %s: %w", sizeBytes, volPath, err)
+		}
+		f.Close()
 
 		mkfsCmd := exec.Command("mkfs.ext4", "-F", "-m0", volPath)
 		if out, err := mkfsCmd.CombinedOutput(); err != nil {
