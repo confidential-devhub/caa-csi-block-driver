@@ -83,18 +83,18 @@ func NewAWSProvider(params map[string]string) (*AWSProvider, error) {
 }
 
 func newEC2Client(cfg Config) (*ec2.Client, error) {
-	var awsCfg aws.Config
-	var err error
+	var opts []func(*awsconfig.LoadOptions) error
+	opts = append(opts, awsconfig.WithRegion(cfg.Region))
 
 	if cfg.AccessKeyId != "" && cfg.SecretKey != "" {
-		awsCfg, err = awsconfig.LoadDefaultConfig(context.TODO(),
-			awsconfig.WithCredentialsProvider(
-				credentials.NewStaticCredentialsProvider(cfg.AccessKeyId, cfg.SecretKey, "")),
-			awsconfig.WithRegion(cfg.Region))
+		logger.Printf("Using static AWS credentials")
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(cfg.AccessKeyId, cfg.SecretKey, "")))
 	} else {
-		awsCfg, err = awsconfig.LoadDefaultConfig(context.TODO(),
-			awsconfig.WithRegion(cfg.Region))
+		logger.Printf("Using default AWS credential chain (IRSA/instance profile/env)")
 	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.TODO(), opts...)
 	if err != nil {
 		return nil, err
 	}

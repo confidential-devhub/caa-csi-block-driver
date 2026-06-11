@@ -1,4 +1,4 @@
-# NOTE: Keep in sync with daemonset-aws-static-creds.yaml — that variant adds static AWS credentials.
+# NOTE: Keep in sync with daemonset-aws.yaml — this variant adds static AWS credentials.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -72,6 +72,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: caa-csi-aws-creds
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: caa-csi-aws-creds
+                  key: AWS_SECRET_ACCESS_KEY
             - name: AWS_REGION
               value: "<YOUR_AWS_REGION>"
           securityContext:
