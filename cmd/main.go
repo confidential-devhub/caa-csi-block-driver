@@ -7,46 +7,57 @@ import (
 	"flag"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/confidential-devhub/caa-csi-block-driver/pkg/driver"
 
-	// Register providers — each init() calls provider.RegisterProvider()
 	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/aws"
 	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/azure"
 	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/libvirt"
 )
 
-var version = "0.1.0"
+var (
+	driverName = flag.String("drivername", "caa-csi-block.csi.confidentialcontainers.io", "CSI driver name")
+	endpoint   = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
+	nodeID     = flag.String("nodeid", "", "Node ID")
+	version    = "0.2.0"
+)
 
 func main() {
-	var cfg driver.Config
-
-	flag.StringVar(&cfg.Endpoint, "endpoint", "unix:///var/run/csi.sock", "CSI endpoint")
-	flag.StringVar(&cfg.DriverName, "drivername", "caa-csi-block.csi.confidentialcontainers.io", "CSI driver name")
-	flag.StringVar(&cfg.NodeID, "nodeid", "", "Node ID")
-	showVersion := flag.Bool("version", false, "Show version")
-
 	flag.Parse()
 
-	if *showVersion {
-		log.Printf("caa-csi-block-driver %s", version)
-		os.Exit(0)
+	if *nodeID == "" {
+		*nodeID = os.Getenv("KUBE_NODE_NAME")
+	}
+	if *nodeID == "" {
+		hostname, err := os.Hostname()
+		if err != nil || hostname == "" {
+			log.Fatal("Node ID is required (--nodeid, KUBE_NODE_NAME env, or resolvable hostname)")
+		}
+		log.Printf("WARNING: Using hostname %q as node ID; set --nodeid or KUBE_NODE_NAME for production", hostname)
+		*nodeID = hostname
 	}
 
-	cfg.VendorVersion = version
-
-	if cfg.NodeID == "" {
-		hostname, _ := os.Hostname()
-		cfg.NodeID = hostname
-	}
-
-	drv, err := driver.NewDriver(cfg)
+	d, err := driver.NewDriver(driver.Config{
+		Endpoint:      *endpoint,
+		DriverName:    *driverName,
+		VendorVersion: version,
+		NodeID:        *nodeID,
+	})
 	if err != nil {
 		log.Fatalf("Failed to create driver: %v", err)
 	}
 
-	log.Printf("Starting caa-csi-block-driver %s", version)
-	if err := drv.Run(); err != nil {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Println("Shutting down CSI driver...")
+		d.Stop()
+	}()
+
+	if err := d.Run(); err != nil {
 		log.Fatalf("Driver failed: %v", err)
 	}
 }

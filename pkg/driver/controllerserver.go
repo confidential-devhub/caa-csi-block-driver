@@ -5,7 +5,9 @@ package driver
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strings"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
@@ -34,6 +36,9 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 	if len(req.GetVolumeCapabilities()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Volume capabilities missing")
 	}
+	if err := validateVolumeCapabilities(req.GetVolumeCapabilities()); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "unsupported volume capability: %v", err)
+	}
 
 	params := req.GetParameters()
 	capacity := req.GetCapacityRange().GetRequiredBytes()
@@ -46,6 +51,18 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 			return nil, status.Errorf(codes.AlreadyExists,
 				"volume %s already exists with different capacity (%d != %d)", req.GetName(), rec.CapacityBytes, capacity)
 		}
+		csLogger.Printf("CreateVolume: %s already exists, returning existing", req.GetName())
+		volumeCtx := map[string]string{"cloudProvider": rec.Provider}
+		for k, v := range rec.Params {
+			volumeCtx[k] = v
+		}
+		return &csi.CreateVolumeResponse{
+			Volume: &csi.Volume{
+				VolumeId:      req.GetName(),
+				CapacityBytes: rec.CapacityBytes,
+				VolumeContext: volumeCtx,
+			},
+		}, nil
 	}
 
 	p, err := provider.NewBlockVolumeProvider(params)
@@ -58,13 +75,15 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 		return nil, status.Errorf(codes.Internal, "provider.CreateVolume failed: %v", err)
 	}
 
-	cs.store.Save(&volumeRecord{
+	if err := cs.store.Save(&volumeRecord{
 		VolumeID:      req.GetName(),
 		Provider:      volInfo.Provider,
 		Path:          volInfo.Path,
 		CapacityBytes: capacity,
 		Params:        params,
-	})
+	}); err != nil {
+		csLogger.Printf("WARNING: failed to persist volume record for %s: %v (volume created in cloud but record may be lost)", req.GetName(), err)
+	}
 	csLogger.Printf("CreateVolume: %s (provider=%s, path=%s)", req.GetName(), volInfo.Provider, volInfo.Path)
 
 	volumeCtx := map[string]string{
@@ -104,6 +123,10 @@ func (cs *controllerServer) DeleteVolume(_ context.Context, req *csi.DeleteVolum
 	}
 
 	if err := p.DeleteVolume(volumeID); err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "attached") || strings.Contains(errMsg, "in use") || strings.Contains(errMsg, "InUse") {
+			return nil, status.Errorf(codes.FailedPrecondition, "volume %s is still attached to an instance: %v", volumeID, err)
+		}
 		return nil, status.Errorf(codes.Internal, "provider.DeleteVolume failed: %v", err)
 	}
 
@@ -126,6 +149,29 @@ func (cs *controllerServer) ControllerGetCapabilities(_ context.Context, _ *csi.
 	}, nil
 }
 
+var supportedAccessModes = map[csi.VolumeCapability_AccessMode_Mode]bool{
+	csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER:        true,
+	csi.VolumeCapability_AccessMode_SINGLE_NODE_READER_ONLY:   true,
+	csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER: true,
+	csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER:  true,
+}
+
+func validateVolumeCapabilities(caps []*csi.VolumeCapability) error {
+	for _, cap := range caps {
+		if cap.GetBlock() != nil {
+			return fmt.Errorf("raw block volumes are not supported")
+		}
+		if cap.GetAccessMode() == nil {
+			return fmt.Errorf("access mode is required")
+		}
+		mode := cap.GetAccessMode().GetMode()
+		if !supportedAccessModes[mode] {
+			return fmt.Errorf("access mode %s is not supported (only SINGLE_NODE modes are supported for block volumes)", mode)
+		}
+	}
+	return nil
+}
+
 func (cs *controllerServer) ValidateVolumeCapabilities(_ context.Context, req *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "Volume ID missing")
@@ -136,6 +182,12 @@ func (cs *controllerServer) ValidateVolumeCapabilities(_ context.Context, req *c
 
 	if !cs.store.Exists(req.GetVolumeId()) {
 		return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
+	}
+
+	if err := validateVolumeCapabilities(req.GetVolumeCapabilities()); err != nil {
+		return &csi.ValidateVolumeCapabilitiesResponse{
+			Message: err.Error(),
+		}, nil
 	}
 
 	return &csi.ValidateVolumeCapabilitiesResponse{
