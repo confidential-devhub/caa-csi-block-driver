@@ -1,0 +1,16 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: caa-block-aws-encrypted
+parameters:
+  cloudProvider: aws
+  awsRegion: us-east-2
+  # IMPORTANT: EBS volumes can only be attached to EC2 instances in the same AZ.
+  # This must match the AZ where your worker nodes (and thus PodVMs) run.
+  awsAvailabilityZone: us-east-2a
+  awsVolumeType: gp3
+  encrypt-type: LUKS
+  kbs-key-id: "default/key/volume-encryption-key"
+provisioner: caa-csi-block.csi.confidentialcontainers.io
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
