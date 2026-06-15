@@ -1,4 +1,8 @@
+{{- if .Values.namespace.create }}
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ .Values.namespace }}
+  name: {{ include "caa-csi.namespace" . }}
+  labels:
+    {{- include "caa-csi.labels" . | nindent 4 }}
+{{- end }}

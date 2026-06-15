@@ -1,9 +1,9 @@
 apiVersion: v2
 name: caa-csi-block-driver
-description: A CSI block driver for Confidential Containers Peer Pods
+description: CSI block volume driver for Confidential Containers (peer pods)
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 home: https://github.com/confidential-devhub/caa-csi-block-driver
 sources:
   - https://github.com/confidential-devhub/caa-csi-block-driver
@@ -11,6 +11,7 @@ keywords:
   - csi
   - confidential-containers
   - peer-pods
-  - storage
+  - block-storage
 maintainers:
   - name: Mohammed Adnan
+    url: https://github.com/mohammedadnan21
