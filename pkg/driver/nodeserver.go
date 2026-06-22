@@ -7,11 +7,15 @@ import (
 	"context"
 	b64 "encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
@@ -195,6 +199,65 @@ func (ns *nodeServer) NodeUnstageVolume(_ context.Context, req *csi.NodeUnstageV
 	return &csi.NodeUnstageVolumeResponse{}, nil
 }
 
+func (ns *nodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
+	volumeID := req.GetVolumeId()
+	volumePath := req.GetVolumePath()
+	if volumeID == "" {
+		return nil, status.Error(codes.InvalidArgument, "Volume ID missing")
+	}
+	if volumePath == "" {
+		return nil, status.Error(codes.InvalidArgument, "Volume path missing")
+	}
+
+	requiredBytes := req.GetCapacityRange().GetRequiredBytes()
+	if requiredBytes == 0 {
+		return nil, status.Error(codes.InvalidArgument, "Required capacity missing")
+	}
+
+	ns.mu.Lock()
+	devicePath := ns.devices[volumeID]
+	ns.mu.Unlock()
+
+	if devicePath == "" || !strings.HasPrefix(devicePath, "/") {
+		nsLogger.Printf("NodeExpandVolume: device path %q for volume %s is not a local path, filesystem resize will happen inside PodVM", devicePath, volumeID)
+		return &csi.NodeExpandVolumeResponse{CapacityBytes: requiredBytes}, nil
+	}
+
+	if err := resizeFilesystem(ctx, devicePath, volumePath); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to resize filesystem on %s: %v", devicePath, err)
+	}
+
+	nsLogger.Printf("NodeExpandVolume: %s resized at %s", volumeID, volumePath)
+	return &csi.NodeExpandVolumeResponse{CapacityBytes: requiredBytes}, nil
+}
+
+const resizeTimeout = 30 * time.Second
+
+func resizeFilesystem(ctx context.Context, devicePath, mountPath string) error {
+	ctx, cancel := context.WithTimeout(ctx, resizeTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "blkid", "-o", "value", "-s", "TYPE", devicePath).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("detecting filesystem type on %s: %s: %w", devicePath, strings.TrimSpace(string(out)), err)
+	}
+	fsType := strings.TrimSpace(string(out))
+
+	switch fsType {
+	case "ext4", "ext3", "ext2":
+		if out, err := exec.CommandContext(ctx, "resize2fs", devicePath).CombinedOutput(); err != nil {
+			return fmt.Errorf("resize2fs %s: %s: %w", devicePath, strings.TrimSpace(string(out)), err)
+		}
+	case "xfs":
+		if out, err := exec.CommandContext(ctx, "xfs_growfs", mountPath).CombinedOutput(); err != nil {
+			return fmt.Errorf("xfs_growfs %s: %s: %w", mountPath, strings.TrimSpace(string(out)), err)
+		}
+	default:
+		return fmt.Errorf("unsupported filesystem %q for online resize", fsType)
+	}
+	return nil
+}
+
 func (ns *nodeServer) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
 	return &csi.NodeGetCapabilitiesResponse{
 		Capabilities: []*csi.NodeServiceCapability{
@@ -202,6 +265,13 @@ func (ns *nodeServer) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapab
 				Type: &csi.NodeServiceCapability_Rpc{
 					Rpc: &csi.NodeServiceCapability_RPC{
 						Type: csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME,
+					},
+				},
+			},
+			{
+				Type: &csi.NodeServiceCapability_Rpc{
+					Rpc: &csi.NodeServiceCapability_RPC{
+						Type: csi.NodeServiceCapability_RPC_EXPAND_VOLUME,
 					},
 				},
 			},
