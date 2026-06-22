@@ -135,6 +135,55 @@ func (cs *controllerServer) DeleteVolume(_ context.Context, req *csi.DeleteVolum
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
+func (cs *controllerServer) ControllerExpandVolume(_ context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
+	volumeID := req.GetVolumeId()
+	if volumeID == "" {
+		return nil, status.Error(codes.InvalidArgument, "Volume ID missing")
+	}
+
+	requiredBytes := req.GetCapacityRange().GetRequiredBytes()
+	if requiredBytes == 0 {
+		return nil, status.Error(codes.InvalidArgument, "Required capacity missing")
+	}
+
+	rec, err := cs.store.Load(volumeID)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "volume %s not found: %v", volumeID, err)
+	}
+
+	if rec.CapacityBytes >= requiredBytes {
+		csLogger.Printf("ControllerExpandVolume: %s already at capacity %d >= %d", volumeID, rec.CapacityBytes, requiredBytes)
+		return &csi.ControllerExpandVolumeResponse{
+			CapacityBytes:         rec.CapacityBytes,
+			NodeExpansionRequired: true,
+		}, nil
+	}
+
+	p, err := provider.NewBlockVolumeProvider(rec.Params)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to create provider for expand: %v", err)
+	}
+
+	if expander, ok := p.(provider.VolumeExpander); ok {
+		if err := expander.ExpandVolume(volumeID, requiredBytes); err != nil {
+			return nil, status.Errorf(codes.Internal, "provider.ExpandVolume failed: %v", err)
+		}
+	} else {
+		return nil, status.Errorf(codes.Unimplemented, "provider %s does not support volume expansion", rec.Provider)
+	}
+
+	rec.CapacityBytes = requiredBytes
+	if err := cs.store.Save(rec); err != nil {
+		return nil, status.Errorf(codes.Internal, "volume %s expanded in cloud but failed to persist record: %v", volumeID, err)
+	}
+
+	csLogger.Printf("ControllerExpandVolume: %s expanded to %d bytes", volumeID, requiredBytes)
+	return &csi.ControllerExpandVolumeResponse{
+		CapacityBytes:         requiredBytes,
+		NodeExpansionRequired: true,
+	}, nil
+}
+
 func (cs *controllerServer) ControllerGetCapabilities(_ context.Context, _ *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
 	return &csi.ControllerGetCapabilitiesResponse{
 		Capabilities: []*csi.ControllerServiceCapability{
@@ -142,6 +191,13 @@ func (cs *controllerServer) ControllerGetCapabilities(_ context.Context, _ *csi.
 				Type: &csi.ControllerServiceCapability_Rpc{
 					Rpc: &csi.ControllerServiceCapability_RPC{
 						Type: csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
+					},
+				},
+			},
+			{
+				Type: &csi.ControllerServiceCapability_Rpc{
+					Rpc: &csi.ControllerServiceCapability_RPC{
+						Type: csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
 					},
 				},
 			},

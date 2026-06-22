@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -38,6 +39,9 @@ type Config struct {
 	VolumeType       string
 	AccessKeyId      string
 	SecretKey        string
+	IOPS             int32
+	Throughput       int32
+	KmsKeyId         string
 }
 
 // AWSProvider creates and deletes EBS volumes via the AWS EC2 API.
@@ -63,12 +67,39 @@ func NewAWSProvider(params map[string]string) (*AWSProvider, error) {
 		volType = defaultVolumeType
 	}
 
+	var iops int32
+	if v := params["awsIops"]; v != "" {
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("invalid awsIops %q: must be a positive integer within int32 range", v)
+		}
+		iops = int32(n)
+	}
+	var throughput int32
+	if v := params["awsThroughput"]; v != "" {
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("invalid awsThroughput %q: must be a positive integer within int32 range", v)
+		}
+		throughput = int32(n)
+	}
+
+	if iops > 0 && volType != "gp3" && volType != "io1" && volType != "io2" {
+		return nil, fmt.Errorf("awsIops is only supported for gp3, io1, io2 volume types (got %s)", volType)
+	}
+	if throughput > 0 && volType != "gp3" {
+		return nil, fmt.Errorf("awsThroughput is only supported for gp3 volume type (got %s)", volType)
+	}
+
 	cfg := Config{
 		Region:           region,
 		AvailabilityZone: az,
 		VolumeType:       volType,
 		AccessKeyId:      params["awsAccessKeyId"],
 		SecretKey:        params["awsSecretKey"],
+		IOPS:             iops,
+		Throughput:       throughput,
+		KmsKeyId:         params["awsKmsKeyId"],
 	}
 
 	client, err := newEC2Client(cfg)
@@ -133,6 +164,16 @@ func (p *AWSProvider) CreateVolume(volumeID string, sizeBytes int64) (*provider.
 				{Key: aws.String(volumeTagKey), Value: aws.String(volumeID)},
 			},
 		}},
+	}
+	if p.config.IOPS > 0 {
+		input.Iops = aws.Int32(p.config.IOPS)
+	}
+	if p.config.Throughput > 0 {
+		input.Throughput = aws.Int32(p.config.Throughput)
+	}
+	if p.config.KmsKeyId != "" {
+		input.Encrypted = aws.Bool(true)
+		input.KmsKeyId = aws.String(p.config.KmsKeyId)
 	}
 
 	result, err := p.ec2Client.CreateVolume(ctx, input)
@@ -249,4 +290,45 @@ func (p *AWSProvider) findEBSVolumeID(volumeID string) (string, error) {
 	}
 
 	return *result.Volumes[0].VolumeId, nil
+}
+
+// ExpandVolume resizes an existing EBS volume to newSizeBytes.
+func (p *AWSProvider) ExpandVolume(volumeID string, newSizeBytes int64) error {
+	ctx := context.TODO()
+
+	ebsVolumeID, err := p.findEBSVolumeID(volumeID)
+	if err != nil {
+		return fmt.Errorf("cannot find EBS volume for %s: %w", volumeID, err)
+	}
+
+	const gib = 1024 * 1024 * 1024
+	newSizeGiB := int32((newSizeBytes + gib - 1) / gib)
+	if newSizeGiB == 0 {
+		newSizeGiB = 1
+	}
+
+	descResult, err := p.ec2Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
+		VolumeIds: []string{ebsVolumeID},
+	})
+	if err != nil {
+		return fmt.Errorf("ec2.DescribeVolumes failed for %s: %w", ebsVolumeID, err)
+	}
+	if len(descResult.Volumes) > 0 && aws.ToInt32(descResult.Volumes[0].Size) >= newSizeGiB {
+		logger.Printf("EBS volume %s already at %d GiB >= requested %d GiB, skipping ModifyVolume",
+			ebsVolumeID, aws.ToInt32(descResult.Volumes[0].Size), newSizeGiB)
+		return nil
+	}
+
+	logger.Printf("Expanding EBS volume %s (ebs-id=%s) to %d GiB", volumeID, ebsVolumeID, newSizeGiB)
+
+	_, err = p.ec2Client.ModifyVolume(ctx, &ec2.ModifyVolumeInput{
+		VolumeId: aws.String(ebsVolumeID),
+		Size:     aws.Int32(newSizeGiB),
+	})
+	if err != nil {
+		return fmt.Errorf("ec2.ModifyVolume failed for %s: %w", ebsVolumeID, err)
+	}
+
+	logger.Printf("EBS volume %s expand request accepted (modification is async, node resize will follow)", ebsVolumeID)
+	return nil
 }

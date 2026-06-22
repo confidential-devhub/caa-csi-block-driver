@@ -13,10 +13,18 @@ type VolumeInfo struct {
 }
 
 // BlockVolumeProvider is the contract every cloud provider must implement.
+// All mutating methods must be idempotent: repeated calls with the same
+// arguments should produce the same result without side effects.
 type BlockVolumeProvider interface {
+	// CreateVolume provisions a new block volume of the given size.
+	// Returns existing volume info if the volume already exists (idempotent).
 	CreateVolume(volumeID string, sizeBytes int64) (*VolumeInfo, error)
+	// DeleteVolume removes a block volume.
+	// Returns nil if the volume does not exist (idempotent).
 	DeleteVolume(volumeID string) error
+	// GetVolumeInfo returns metadata about an existing volume.
 	GetVolumeInfo(volumeID string) (*VolumeInfo, error)
+	// VolumeExists checks whether a volume with the given ID exists.
 	VolumeExists(volumeID string) (bool, error)
 }
 
@@ -53,6 +61,6 @@ type SnapshotInfo struct {
 	SnapshotID     string
 	SourceVolumeID string
 	SizeBytes      int64
-	CreationTime   int64
+	CreationTime   int64 // Unix timestamp in seconds (UTC)
 	ReadyToUse     bool
 }
