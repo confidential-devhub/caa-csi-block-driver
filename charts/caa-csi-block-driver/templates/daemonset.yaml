@@ -1,23 +1,24 @@
+{{- include "caa-csi.validateValues" . }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: caa-csi-block-driver
-  namespace: {{ .Values.namespace }}
+  name: {{ include "caa-csi.fullname" . }}
+  namespace: {{ include "caa-csi.namespace" . }}
   labels:
-    app: caa-csi-block-driver
+    {{- include "caa-csi.labels" . | nindent 4 }}
 spec:
   selector:
     matchLabels:
-      app: caa-csi-block-driver
+      {{- include "caa-csi.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app: caa-csi-block-driver
+        {{- include "caa-csi.selectorLabels" . | nindent 8 }}
     spec:
-      serviceAccountName: caa-csi-provisioner
+      serviceAccountName: {{ include "caa-csi.serviceAccountName" . }}
       containers:
         - name: csi-provisioner
-          image: {{ .Values.sidecars.provisioner.image }}
+          image: {{ .Values.sidecarImages.provisioner }}
           args:
             - "-v=3"
             - "--csi-address=/csi/csi.sock"
@@ -36,13 +37,13 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
           securityContext:
-            privileged: true
+            privileged: {{ .Values.nodePlugin.privileged }}
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
 
         - name: node-driver-registrar
-          image: {{ .Values.sidecars.nodeDriverRegistrar.image }}
+          image: {{ .Values.sidecarImages.nodeDriverRegistrar }}
           args:
             - "--v=3"
             - "--csi-address=/csi/csi.sock"
@@ -53,7 +54,7 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
           securityContext:
-            privileged: true
+            privileged: {{ .Values.nodePlugin.privileged }}
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
@@ -64,7 +65,7 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - "--drivername={{ .Values.driverName }}"
+            - "--drivername={{ .Values.csiDriver.name }}"
             - "--endpoint=unix:///csi/csi.sock"
             - "--nodeid=$(KUBE_NODE_NAME)"
           env:
@@ -73,21 +74,23 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             {{- if eq .Values.provider "aws" }}
+            - name: AWS_REGION
+              value: {{ required "aws.region is required when provider=aws" .Values.aws.region | quote }}
+            {{- if and (not .Values.aws.irsa.enabled) .Values.aws.staticCredentials.enabled }}
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.aws.credentialsSecret }}
+                  name: {{ .Values.aws.staticCredentials.secretName }}
                   key: AWS_ACCESS_KEY_ID
             - name: AWS_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.aws.credentialsSecret }}
+                  name: {{ .Values.aws.staticCredentials.secretName }}
                   key: AWS_SECRET_ACCESS_KEY
-            - name: AWS_REGION
-              value: {{ .Values.aws.region | quote }}
+            {{- end }}
             {{- end }}
           securityContext:
-            privileged: true
+            privileged: {{ .Values.nodePlugin.privileged }}
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
@@ -102,7 +105,7 @@ spec:
             - mountPath: /var/lib/caa-csi-block
               name: csi-data
             {{- if eq .Values.provider "libvirt" }}
-            - mountPath: {{ .Values.libvirt.volumePath }}
+            - mountPath: {{ .Values.libvirt.volumeDir }}
               name: libvirt-pool
             {{- end }}
 
@@ -134,6 +137,6 @@ spec:
         {{- if eq .Values.provider "libvirt" }}
         - name: libvirt-pool
           hostPath:
-            path: {{ .Values.libvirt.volumePath }}
+            path: {{ .Values.libvirt.volumeDir }}
             type: DirectoryOrCreate
         {{- end }}

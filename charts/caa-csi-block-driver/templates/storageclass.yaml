@@ -1,30 +1,34 @@
+{{- if .Values.storageClass.create }}
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: {{ .Values.storageClass.name }}-{{ .Values.provider }}
+  name: {{ include "caa-csi.storageClassName" . }}
+  labels:
+    {{- include "caa-csi.labels" . | nindent 4 }}
+provisioner: {{ .Values.csiDriver.name }}
+reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
+volumeBindingMode: {{ .Values.storageClass.volumeBindingMode }}
 parameters:
   cloudProvider: {{ .Values.provider }}
   {{- if eq .Values.provider "aws" }}
-  awsRegion: {{ .Values.aws.region }}
-  awsAvailabilityZone: {{ .Values.aws.availabilityZone }}
-  awsVolumeType: {{ .Values.aws.volumeType }}
+  awsRegion: {{ required "aws.region is required when provider=aws" .Values.aws.region | quote }}
+  awsAvailabilityZone: {{ required "aws.availabilityZone is required when provider=aws" .Values.aws.availabilityZone | quote }}
+  awsVolumeType: {{ .Values.aws.volumeType | quote }}
   {{- end }}
   {{- if eq .Values.provider "azure" }}
-  azureSubscriptionId: {{ .Values.azure.subscriptionId | quote }}
-  azureResourceGroup: {{ .Values.azure.resourceGroup | quote }}
-  azureLocation: {{ .Values.azure.location }}
-  azureDiskSKU: {{ .Values.azure.diskSKU }}
+  azureSubscriptionId: {{ required "azure.subscriptionId is required when provider=azure" .Values.azure.subscriptionId | quote }}
+  azureResourceGroup: {{ required "azure.resourceGroup is required when provider=azure" .Values.azure.resourceGroup | quote }}
+  azureLocation: {{ required "azure.location is required when provider=azure" .Values.azure.location | quote }}
+  azureDiskSku: {{ .Values.azure.diskSku | quote }}
   {{- end }}
   {{- if eq .Values.provider "libvirt" }}
-  cloudProviderVolumePath: {{ .Values.libvirt.volumePath }}
+  cloudProviderVolumePath: {{ .Values.libvirt.volumeDir | quote }}
   {{- end }}
   {{- if .Values.cdh.enabled }}
-  cdhEncryptionType: {{ .Values.cdh.encryptionType }}
-  cdhSourceType: {{ .Values.cdh.sourceType }}
-  cdhTargetType: {{ .Values.cdh.targetType }}
-  cdhFilesystemType: {{ .Values.cdh.filesystemType }}
+  cdhEncryptionType: {{ .Values.cdh.encryptionType | quote }}
+  cdhSourceType: {{ .Values.cdh.sourceType | quote }}
+  cdhTargetType: {{ .Values.cdh.targetType | quote }}
+  cdhFilesystemType: {{ .Values.cdh.filesystemType | quote }}
   cdhKey: {{ required "cdh.key must be set when cdh.enabled=true" .Values.cdh.key | quote }}
   {{- end }}
-provisioner: {{ .Values.driverName }}
-reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
-volumeBindingMode: {{ .Values.storageClass.volumeBindingMode }}
+{{- end }}
