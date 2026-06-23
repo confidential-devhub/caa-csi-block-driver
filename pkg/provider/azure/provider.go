@@ -65,7 +65,10 @@ func NewAzureProvider(params map[string]string) (*AzureProvider, error) {
 		return nil, fmt.Errorf("azureLocation is required for azure provider")
 	}
 
-	diskSKU := params["azureDiskSku"]
+	diskSKU := params["azureDiskSKU"]
+	if diskSKU == "" {
+		diskSKU = params["azureDiskSku"]
+	}
 	if diskSKU == "" {
 		diskSKU = defaultDiskSKU
 	}
