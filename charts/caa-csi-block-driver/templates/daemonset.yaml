@@ -1,3 +1,4 @@
+{{- include "caa-csi.validateValues" . }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:

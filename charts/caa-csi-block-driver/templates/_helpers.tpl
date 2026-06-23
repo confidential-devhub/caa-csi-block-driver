@@ -1,3 +1,9 @@
+{{- define "caa-csi.validateValues" -}}
+{{- if and (eq .Values.provider "aws") .Values.aws.irsa.enabled .Values.aws.staticCredentials.enabled }}
+{{- fail "aws.irsa.enabled and aws.staticCredentials.enabled are mutually exclusive — choose one authentication method" }}
+{{- end }}
+{{- end }}
+
 {{- define "caa-csi.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
@@ -31,8 +37,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "caa-csi.serviceAccountName" -}}
 {{- if .Values.serviceAccount.name }}
 {{- .Values.serviceAccount.name }}
-{{- else }}
+{{- else if .Values.serviceAccount.create }}
 {{- include "caa-csi.fullname" . }}
+{{- else }}
+{{- "default" }}
 {{- end }}
 {{- end }}
 
