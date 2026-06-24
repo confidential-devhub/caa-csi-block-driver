@@ -107,6 +107,11 @@ func NewAzureProvider(params map[string]string) (*AzureProvider, error) {
 		return nil, fmt.Errorf("azureDiskMbps is only supported for UltraSSD_LRS and PremiumV2_LRS (got %s)", diskSKU)
 	}
 
+	diskEncSetID := params["azureDiskEncryptionSetId"]
+	if diskEncSetID != "" && !isValidAzureResourceID(diskEncSetID) {
+		return nil, fmt.Errorf("invalid azureDiskEncryptionSetId %q: must be a valid Azure resource ID", diskEncSetID)
+	}
+
 	return &AzureProvider{
 		disksClient: disksClient,
 		cred:        cred,
@@ -117,9 +122,15 @@ func NewAzureProvider(params map[string]string) (*AzureProvider, error) {
 			DiskSKU:        diskSKU,
 			DiskIOPS:       diskIOPS,
 			DiskMBps:       diskMBps,
-			DiskEncSetID:   params["azureDiskEncryptionSetId"],
+			DiskEncSetID:   diskEncSetID,
 		},
 	}, nil
+}
+
+var azureResourceIDPattern = regexp.MustCompile(`^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/[^/]+/[^/]+/[^/]+$`)
+
+func isValidAzureResourceID(id string) bool {
+	return azureResourceIDPattern.MatchString(id)
 }
 
 var azureDiskNameInvalidChars = regexp.MustCompile(`[^a-zA-Z0-9_.\-]`)
