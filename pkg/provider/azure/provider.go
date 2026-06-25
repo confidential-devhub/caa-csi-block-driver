@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,6 +38,9 @@ type Config struct {
 	ResourceGroup  string
 	Location       string
 	DiskSKU        string
+	DiskIOPS       int64
+	DiskMBps       int64
+	DiskEncSetID   string
 }
 
 type AzureProvider struct {
@@ -61,7 +65,10 @@ func NewAzureProvider(params map[string]string) (*AzureProvider, error) {
 		return nil, fmt.Errorf("azureLocation is required for azure provider")
 	}
 
-	diskSKU := params["azureDiskSku"]
+	diskSKU := params["azureDiskSKU"]
+	if diskSKU == "" {
+		diskSKU = params["azureDiskSku"]
+	}
 	if diskSKU == "" {
 		diskSKU = defaultDiskSKU
 	}
@@ -76,6 +83,35 @@ func NewAzureProvider(params map[string]string) (*AzureProvider, error) {
 		return nil, fmt.Errorf("failed to create Azure disks client: %w", err)
 	}
 
+	var diskIOPS int64
+	if v := params["azureDiskIops"]; v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("invalid azureDiskIops %q: must be a positive integer", v)
+		}
+		diskIOPS = n
+	}
+	var diskMBps int64
+	if v := params["azureDiskMbps"]; v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("invalid azureDiskMbps %q: must be a positive integer", v)
+		}
+		diskMBps = n
+	}
+
+	if diskIOPS > 0 && diskSKU != "UltraSSD_LRS" && diskSKU != "PremiumV2_LRS" {
+		return nil, fmt.Errorf("azureDiskIops is only supported for UltraSSD_LRS and PremiumV2_LRS (got %s)", diskSKU)
+	}
+	if diskMBps > 0 && diskSKU != "UltraSSD_LRS" && diskSKU != "PremiumV2_LRS" {
+		return nil, fmt.Errorf("azureDiskMbps is only supported for UltraSSD_LRS and PremiumV2_LRS (got %s)", diskSKU)
+	}
+
+	diskEncSetID := params["azureDiskEncryptionSetId"]
+	if diskEncSetID != "" && !isValidAzureResourceID(diskEncSetID) {
+		return nil, fmt.Errorf("invalid azureDiskEncryptionSetId %q: must be a valid Azure resource ID", diskEncSetID)
+	}
+
 	return &AzureProvider{
 		disksClient: disksClient,
 		cred:        cred,
@@ -84,8 +120,17 @@ func NewAzureProvider(params map[string]string) (*AzureProvider, error) {
 			ResourceGroup:  resourceGroup,
 			Location:       location,
 			DiskSKU:        diskSKU,
+			DiskIOPS:       diskIOPS,
+			DiskMBps:       diskMBps,
+			DiskEncSetID:   diskEncSetID,
 		},
 	}, nil
+}
+
+var azureResourceIDPattern = regexp.MustCompile(`^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/[^/]+/[^/]+/[^/]+$`)
+
+func isValidAzureResourceID(id string) bool {
+	return azureResourceIDPattern.MatchString(id)
 }
 
 var azureDiskNameInvalidChars = regexp.MustCompile(`[^a-zA-Z0-9_.\-]`)
@@ -127,17 +172,31 @@ func (p *AzureProvider) CreateVolume(volumeID string, sizeBytes int64) (*provide
 	logger.Printf("Creating Azure Managed Disk %s (%d GiB, sku=%s, location=%s)",
 		name, sizeGiB, p.config.DiskSKU, p.config.Location)
 
+	diskProps := &armcompute.DiskProperties{
+		CreationData: &armcompute.CreationData{
+			CreateOption: to.Ptr(armcompute.DiskCreateOptionEmpty),
+		},
+		DiskSizeGB: to.Ptr(sizeGiB),
+	}
+	if p.config.DiskIOPS > 0 {
+		diskProps.DiskIOPSReadWrite = to.Ptr(p.config.DiskIOPS)
+	}
+	if p.config.DiskMBps > 0 {
+		diskProps.DiskMBpsReadWrite = to.Ptr(p.config.DiskMBps)
+	}
+	if p.config.DiskEncSetID != "" {
+		diskProps.Encryption = &armcompute.Encryption{
+			DiskEncryptionSetID: to.Ptr(p.config.DiskEncSetID),
+			Type:                to.Ptr(armcompute.EncryptionTypeEncryptionAtRestWithCustomerKey),
+		}
+	}
+
 	disk := armcompute.Disk{
-		Location: to.Ptr(p.config.Location),
+		Location:   to.Ptr(p.config.Location),
 		SKU: &armcompute.DiskSKU{
 			Name: to.Ptr(armcompute.DiskStorageAccountTypes(p.config.DiskSKU)),
 		},
-		Properties: &armcompute.DiskProperties{
-			CreationData: &armcompute.CreationData{
-				CreateOption: to.Ptr(armcompute.DiskCreateOptionEmpty),
-			},
-			DiskSizeGB: to.Ptr(sizeGiB),
-		},
+		Properties: diskProps,
 		Tags: map[string]*string{
 			volumeTagKey: to.Ptr(volumeID),
 		},
@@ -241,6 +300,48 @@ func (p *AzureProvider) VolumeExists(volumeID string) (bool, error) {
 		return false, fmt.Errorf("failed to check disk %s: %w", name, err)
 	}
 	return true, nil
+}
+
+// ExpandVolume resizes an Azure Managed Disk to newSizeBytes.
+func (p *AzureProvider) ExpandVolume(volumeID string, newSizeBytes int64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
+	name := p.diskName(volumeID)
+
+	const gib = 1024 * 1024 * 1024
+	newSizeGiB := int32((newSizeBytes + gib - 1) / gib)
+	if newSizeGiB == 0 {
+		newSizeGiB = 1
+	}
+
+	resp, err := p.disksClient.Get(ctx, p.config.ResourceGroup, name, nil)
+	if err != nil {
+		return fmt.Errorf("failed to get disk %s for expansion: %w", name, err)
+	}
+	if resp.Properties != nil && resp.Properties.DiskSizeGB != nil && *resp.Properties.DiskSizeGB >= newSizeGiB {
+		logger.Printf("Azure Managed Disk %s already at %d GiB >= requested %d GiB, skipping",
+			name, *resp.Properties.DiskSizeGB, newSizeGiB)
+		return nil
+	}
+
+	logger.Printf("Expanding Azure Managed Disk %s to %d GiB", name, newSizeGiB)
+
+	disk := armcompute.DiskUpdate{
+		Properties: &armcompute.DiskUpdateProperties{
+			DiskSizeGB: to.Ptr(newSizeGiB),
+		},
+	}
+
+	poller, err := p.disksClient.BeginUpdate(ctx, p.config.ResourceGroup, name, disk, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin expanding disk %s: %w", name, err)
+	}
+	if _, err := poller.PollUntilDone(ctx, nil); err != nil {
+		return fmt.Errorf("failed to expand disk %s: %w", name, err)
+	}
+
+	logger.Printf("Azure Managed Disk %s expanded to %d GiB", name, newSizeGiB)
+	return nil
 }
 
 func (p *AzureProvider) credential() *azidentity.DefaultAzureCredential {
