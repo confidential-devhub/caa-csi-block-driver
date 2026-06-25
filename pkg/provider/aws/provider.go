@@ -5,6 +5,7 @@ package aws
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 
 	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
@@ -331,4 +333,174 @@ func (p *AWSProvider) ExpandVolume(volumeID string, newSizeBytes int64) error {
 
 	logger.Printf("EBS volume %s expand request accepted (modification is async, node resize will follow)", ebsVolumeID)
 	return nil
+}
+
+// CreateSnapshot creates an EBS snapshot from the given volume.
+func (p *AWSProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID string) (*provider.SnapshotInfo, error) {
+	ebsVolumeID, err := p.findEBSVolumeID(volumeID)
+	if err != nil {
+		return nil, fmt.Errorf("cannot find EBS volume for snapshot: %w", err)
+	}
+
+	logger.Printf("Creating snapshot %s from EBS volume %s (ebs-id=%s)", snapshotID, volumeID, ebsVolumeID)
+
+	result, err := p.ec2Client.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{
+		VolumeId: aws.String(ebsVolumeID),
+		TagSpecifications: []ec2types.TagSpecification{{
+			ResourceType: ec2types.ResourceTypeSnapshot,
+			Tags: []ec2types.Tag{
+				{Key: aws.String("Name"), Value: aws.String("csi-snap-" + snapshotID)},
+				{Key: aws.String("caa-csi-snapshot-id"), Value: aws.String(snapshotID)},
+				{Key: aws.String(volumeTagKey), Value: aws.String(volumeID)},
+			},
+		}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ec2.CreateSnapshot failed: %w", err)
+	}
+
+	var sizeBytes int64
+	if result.VolumeSize != nil {
+		sizeBytes = int64(*result.VolumeSize) * 1024 * 1024 * 1024
+	}
+
+	return &provider.SnapshotInfo{
+		SnapshotID:     snapshotID,
+		SourceVolumeID: volumeID,
+		SizeBytes:      sizeBytes,
+		CreationTime:   safeUnix(result.StartTime),
+		ReadyToUse:     result.State == ec2types.SnapshotStateCompleted,
+	}, nil
+}
+
+// DeleteSnapshot deletes an EBS snapshot by its CSI snapshot ID tag.
+func (p *AWSProvider) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	ebsSnapID, err := p.findEBSSnapshotID(ctx, snapshotID)
+	if err != nil {
+		logger.Printf("Snapshot %s not found, nothing to delete", snapshotID)
+		return nil
+	}
+
+	logger.Printf("Deleting EBS snapshot %s (ebs-snap-id=%s)", snapshotID, ebsSnapID)
+	_, err = p.ec2Client.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{
+		SnapshotId: aws.String(ebsSnapID),
+	})
+	if err != nil {
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "InvalidSnapshot.NotFound" {
+			logger.Printf("Snapshot %s already deleted (EBS: %s)", snapshotID, ebsSnapID)
+			return nil
+		}
+		return fmt.Errorf("ec2.DeleteSnapshot failed for %s: %w", ebsSnapID, err)
+	}
+	return nil
+}
+
+// ListSnapshots lists EBS snapshots. If volumeID is non-empty, only snapshots
+// for that volume are returned; otherwise all managed snapshots are listed.
+// Uses pagination to handle large numbers of snapshots.
+func (p *AWSProvider) ListSnapshots(ctx context.Context, volumeID string) ([]*provider.SnapshotInfo, error) {
+	var filters []ec2types.Filter
+	if volumeID != "" {
+		filters = append(filters, ec2types.Filter{
+			Name:   aws.String("tag:" + volumeTagKey),
+			Values: []string{volumeID},
+		})
+	} else {
+		filters = append(filters, ec2types.Filter{
+			Name:   aws.String("tag-key"),
+			Values: []string{"caa-csi-snapshot-id"},
+		})
+	}
+
+	var snaps []*provider.SnapshotInfo
+	paginator := ec2.NewDescribeSnapshotsPaginator(p.ec2Client, &ec2.DescribeSnapshotsInput{
+		Filters: filters,
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ec2.DescribeSnapshots failed: %w", err)
+		}
+		for _, s := range page.Snapshots {
+			snaps = append(snaps, p.ebsSnapshotToInfo(&s))
+		}
+	}
+	return snaps, nil
+}
+
+// FindSnapshot looks up a single snapshot by its CSI snapshot name tag.
+// Returns nil, nil if the snapshot does not exist.
+func (p *AWSProvider) FindSnapshot(ctx context.Context, snapshotID string) (*provider.SnapshotInfo, error) {
+	result, err := p.ec2Client.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("tag:caa-csi-snapshot-id"),
+				Values: []string{snapshotID},
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ec2.DescribeSnapshots failed: %w", err)
+	}
+	if len(result.Snapshots) == 0 {
+		return nil, nil
+	}
+	if len(result.Snapshots) > 1 {
+		return nil, fmt.Errorf("ambiguous: found %d snapshots with tag caa-csi-snapshot-id=%s", len(result.Snapshots), snapshotID)
+	}
+	return p.ebsSnapshotToInfo(&result.Snapshots[0]), nil
+}
+
+func (p *AWSProvider) ebsSnapshotToInfo(s *ec2types.Snapshot) *provider.SnapshotInfo {
+	snapID := ""
+	sourceVolID := ""
+	for _, tag := range s.Tags {
+		switch aws.ToString(tag.Key) {
+		case "caa-csi-snapshot-id":
+			snapID = aws.ToString(tag.Value)
+		case volumeTagKey:
+			sourceVolID = aws.ToString(tag.Value)
+		}
+	}
+	var sizeBytes int64
+	if s.VolumeSize != nil {
+		sizeBytes = int64(*s.VolumeSize) * 1024 * 1024 * 1024
+	}
+	return &provider.SnapshotInfo{
+		SnapshotID:     snapID,
+		SourceVolumeID: sourceVolID,
+		SizeBytes:      sizeBytes,
+		CreationTime:   safeUnix(s.StartTime),
+		ReadyToUse:     s.State == ec2types.SnapshotStateCompleted,
+	}
+}
+
+func (p *AWSProvider) findEBSSnapshotID(ctx context.Context, snapshotID string) (string, error) {
+
+	result, err := p.ec2Client.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("tag:caa-csi-snapshot-id"),
+				Values: []string{snapshotID},
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("ec2.DescribeSnapshots failed: %w", err)
+	}
+	if len(result.Snapshots) == 0 {
+		return "", fmt.Errorf("snapshot with tag caa-csi-snapshot-id=%s not found", snapshotID)
+	}
+	if len(result.Snapshots) > 1 {
+		return "", fmt.Errorf("ambiguous: found %d snapshots with tag caa-csi-snapshot-id=%s", len(result.Snapshots), snapshotID)
+	}
+	return aws.ToString(result.Snapshots[0].SnapshotId), nil
+}
+
+func safeUnix(t *time.Time) int64 {
+	if t == nil {
+		return 0
+	}
+	return t.Unix()
 }

@@ -3,6 +3,8 @@
 
 package provider
 
+import "context"
+
 // VolumeInfo holds provider-agnostic metadata about a block volume.
 type VolumeInfo struct {
 	VolumeID  string
@@ -44,9 +46,12 @@ type VolumeRecoverer interface {
 // VolumeSnapshotter is an optional interface that providers can implement
 // to support snapshot creation, deletion, and listing.
 type VolumeSnapshotter interface {
-	CreateSnapshot(volumeID, snapshotID string) (*SnapshotInfo, error)
-	DeleteSnapshot(snapshotID string) error
-	ListSnapshots(volumeID string) ([]*SnapshotInfo, error)
+	CreateSnapshot(ctx context.Context, volumeID, snapshotID string) (*SnapshotInfo, error)
+	DeleteSnapshot(ctx context.Context, snapshotID string) error
+	ListSnapshots(ctx context.Context, volumeID string) ([]*SnapshotInfo, error)
+	// FindSnapshot looks up a single snapshot by its CSI snapshot name.
+	// Returns nil, nil if the snapshot does not exist.
+	FindSnapshot(ctx context.Context, snapshotID string) (*SnapshotInfo, error)
 }
 
 // VolumeCloner is an optional interface for creating a volume from an

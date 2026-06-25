@@ -73,3 +73,31 @@ func (vs *volumeStore) Delete(volumeID string) {
 	defer vs.mu.Unlock()
 	os.Remove(filepath.Join(vs.dir, volumeID+".json"))
 }
+
+// AnyParams returns the Params map from any volume in the store, or nil.
+// Short-circuits after reading the first valid record to avoid O(n) cost.
+func (vs *volumeStore) AnyParams() map[string]string {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	entries, err := os.ReadDir(vs.dir)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(vs.dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var rec volumeRecord
+		if err := json.Unmarshal(data, &rec); err != nil {
+			continue
+		}
+		return rec.Params
+	}
+	return nil
+}
+
