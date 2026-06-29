@@ -1,7 +1,9 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: caa-csi-provisioner-role
+  name: {{ include "caa-csi.fullname" . }}
+  labels:
+    {{- include "caa-csi.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
     resources: ["persistentvolumes"]
@@ -31,12 +33,14 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: caa-csi-provisioner-binding
+  name: {{ include "caa-csi.fullname" . }}
+  labels:
+    {{- include "caa-csi.labels" . | nindent 4 }}
 subjects:
   - kind: ServiceAccount
-    name: caa-csi-provisioner
-    namespace: {{ .Values.namespace }}
+    name: {{ include "caa-csi.serviceAccountName" . }}
+    namespace: {{ include "caa-csi.namespace" . }}
 roleRef:
   kind: ClusterRole
-  name: caa-csi-provisioner-role
+  name: {{ include "caa-csi.fullname" . }}
   apiGroup: rbac.authorization.k8s.io
