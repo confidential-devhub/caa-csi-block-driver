@@ -7,11 +7,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
@@ -29,7 +32,7 @@ func newControllerServer() *controllerServer {
 	}
 }
 
-func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
+func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	if req.GetName() == "" {
 		return nil, status.Error(codes.InvalidArgument, "Volume name missing")
 	}
@@ -70,7 +73,42 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 		return nil, status.Errorf(codes.InvalidArgument, "failed to create provider: %v", err)
 	}
 
-	volInfo, err := p.CreateVolume(req.GetName(), capacity)
+	var volInfo *provider.VolumeInfo
+	if src := req.GetVolumeContentSource(); src != nil {
+		switch {
+		case src.GetSnapshot() != nil:
+			snapID := src.GetSnapshot().GetSnapshotId()
+			snapshotter, ok := p.(provider.VolumeSnapshotter)
+			if !ok {
+				return nil, status.Errorf(codes.NotFound, "snapshot %s not found", snapID)
+			}
+			snap, findErr := snapshotter.FindSnapshot(ctx, snapID)
+			if findErr != nil {
+				return nil, status.Errorf(codes.Internal, "failed to verify snapshot %s: %v", snapID, findErr)
+			}
+			if snap == nil {
+				return nil, status.Errorf(codes.NotFound, "snapshot %s not found", snapID)
+			}
+			cloner, ok := p.(provider.VolumeCloner)
+			if !ok {
+				return nil, status.Errorf(codes.Unimplemented, "provider does not support creating volumes from snapshot")
+			}
+			csLogger.Printf("CreateVolume: %s from snapshot %s", req.GetName(), snapID)
+			volInfo, err = cloner.CreateVolumeFromSnapshot(req.GetName(), snapID, capacity)
+		case src.GetVolume() != nil:
+			srcVolID := src.GetVolume().GetVolumeId()
+			cloner, ok := p.(provider.VolumeCloner)
+			if !ok {
+				return nil, status.Errorf(codes.Unimplemented, "provider does not support volume cloning")
+			}
+			csLogger.Printf("CreateVolume: %s cloned from volume %s", req.GetName(), srcVolID)
+			volInfo, err = cloner.CreateVolumeFromVolume(req.GetName(), srcVolID, capacity)
+		default:
+			return nil, status.Error(codes.InvalidArgument, "unsupported VolumeContentSource type")
+		}
+	} else {
+		volInfo, err = p.CreateVolume(req.GetName(), capacity)
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "provider.CreateVolume failed: %v", err)
 	}
@@ -201,8 +239,214 @@ func (cs *controllerServer) ControllerGetCapabilities(_ context.Context, _ *csi.
 					},
 				},
 			},
+			{
+				Type: &csi.ControllerServiceCapability_Rpc{
+					Rpc: &csi.ControllerServiceCapability_RPC{
+						Type: csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
+					},
+				},
+			},
+			{
+				Type: &csi.ControllerServiceCapability_Rpc{
+					Rpc: &csi.ControllerServiceCapability_RPC{
+						Type: csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
+					},
+				},
+			},
 		},
 	}, nil
+}
+
+func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
+	sourceVolumeID := req.GetSourceVolumeId()
+	if sourceVolumeID == "" {
+		return nil, status.Error(codes.InvalidArgument, "Source volume ID missing")
+	}
+	snapshotName := req.GetName()
+	if snapshotName == "" {
+		return nil, status.Error(codes.InvalidArgument, "Snapshot name missing")
+	}
+
+	rec, err := cs.store.Load(sourceVolumeID)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "source volume %s not found: %v", sourceVolumeID, err)
+	}
+
+	p, err := provider.NewBlockVolumeProvider(rec.Params)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to create provider: %v", err)
+	}
+
+	snapshotter, ok := p.(provider.VolumeSnapshotter)
+	if !ok {
+		return nil, status.Errorf(codes.Unimplemented, "provider %s does not support snapshots", rec.Provider)
+	}
+
+	// Targeted lookup by name to enforce uniqueness per CSI spec without listing all snapshots.
+	existing, err := snapshotter.FindSnapshot(ctx, snapshotName)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to check existing snapshot %s: %v", snapshotName, err)
+	}
+	if existing != nil {
+		if existing.SourceVolumeID != sourceVolumeID {
+			return nil, status.Errorf(codes.AlreadyExists,
+				"snapshot %s already exists for different source volume %s", snapshotName, existing.SourceVolumeID)
+		}
+		csLogger.Printf("CreateSnapshot: %s already exists, returning existing", snapshotName)
+		return &csi.CreateSnapshotResponse{
+			Snapshot: &csi.Snapshot{
+				SnapshotId:     existing.SnapshotID,
+				SourceVolumeId: existing.SourceVolumeID,
+				SizeBytes:      existing.SizeBytes,
+				CreationTime:   timestamppb.New(time.Unix(existing.CreationTime, 0)),
+				ReadyToUse:     existing.ReadyToUse,
+			},
+		}, nil
+	}
+
+	snapInfo, err := snapshotter.CreateSnapshot(ctx, sourceVolumeID, snapshotName)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "provider.CreateSnapshot failed: %v", err)
+	}
+
+	csLogger.Printf("CreateSnapshot: %s from %s", snapshotName, sourceVolumeID)
+	return &csi.CreateSnapshotResponse{
+		Snapshot: &csi.Snapshot{
+			SnapshotId:     snapInfo.SnapshotID,
+			SourceVolumeId: sourceVolumeID,
+			SizeBytes:      snapInfo.SizeBytes,
+			CreationTime:   timestamppb.New(time.Unix(snapInfo.CreationTime, 0)),
+			ReadyToUse:     snapInfo.ReadyToUse,
+		},
+	}, nil
+}
+
+func (cs *controllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
+	snapshotID := req.GetSnapshotId()
+	if snapshotID == "" {
+		return nil, status.Error(codes.InvalidArgument, "Snapshot ID missing")
+	}
+
+	// Use secrets from the request if available (preferred for deterministic routing),
+	// otherwise fall back to params from any volume in the store.
+	params := req.GetSecrets()
+	if len(params) == 0 || params["cloudProvider"] == "" {
+		params = cs.store.AnyParams()
+	}
+	if params == nil {
+		csLogger.Printf("DeleteSnapshot: no volumes in store and no secrets provided, cannot determine provider for snapshot %s", snapshotID)
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"cannot determine provider for snapshot %s: no volumes in store and no secrets provided", snapshotID)
+	}
+
+	p, err := provider.NewBlockVolumeProvider(params)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to create provider: %v", err)
+	}
+
+	snapshotter, ok := p.(provider.VolumeSnapshotter)
+	if !ok {
+		return nil, status.Errorf(codes.Unimplemented, "provider does not support snapshots")
+	}
+
+	if err := snapshotter.DeleteSnapshot(ctx, snapshotID); err != nil {
+		return nil, status.Errorf(codes.Internal, "provider.DeleteSnapshot failed: %v", err)
+	}
+
+	csLogger.Printf("DeleteSnapshot: %s deleted", snapshotID)
+	return &csi.DeleteSnapshotResponse{}, nil
+}
+
+func (cs *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
+	sourceVolumeID := req.GetSourceVolumeId()
+	snapshotID := req.GetSnapshotId()
+
+	var params map[string]string
+	if sourceVolumeID != "" {
+		rec, err := cs.store.Load(sourceVolumeID)
+		if err != nil {
+			return nil, status.Errorf(codes.NotFound, "source volume %s not found: %v", sourceVolumeID, err)
+		}
+		params = rec.Params
+	} else {
+		params = cs.store.AnyParams()
+	}
+
+	if params == nil {
+		return &csi.ListSnapshotsResponse{}, nil
+	}
+
+	p, err := provider.NewBlockVolumeProvider(params)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to create provider: %v", err)
+	}
+
+	snapshotter, ok := p.(provider.VolumeSnapshotter)
+	if !ok {
+		return &csi.ListSnapshotsResponse{}, nil
+	}
+
+	// If a specific snapshot ID is requested, do a targeted lookup.
+	if snapshotID != "" {
+		snap, err := snapshotter.FindSnapshot(ctx, snapshotID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "provider.FindSnapshot failed: %v", err)
+		}
+		if snap == nil {
+			return &csi.ListSnapshotsResponse{}, nil
+		}
+		if sourceVolumeID != "" && snap.SourceVolumeID != sourceVolumeID {
+			return &csi.ListSnapshotsResponse{}, nil
+		}
+		return &csi.ListSnapshotsResponse{
+			Entries: []*csi.ListSnapshotsResponse_Entry{{
+				Snapshot: &csi.Snapshot{
+					SnapshotId:     snap.SnapshotID,
+					SourceVolumeId: snap.SourceVolumeID,
+					SizeBytes:      snap.SizeBytes,
+					CreationTime:   timestamppb.New(time.Unix(snap.CreationTime, 0)),
+					ReadyToUse:     snap.ReadyToUse,
+				},
+			}},
+		}, nil
+	}
+
+	snapInfos, err := snapshotter.ListSnapshots(ctx, sourceVolumeID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "provider.ListSnapshots failed: %v", err)
+	}
+
+	maxEntries := int(req.GetMaxEntries())
+	startIdx := 0
+	if token := req.GetStartingToken(); token != "" {
+		idx, err := strconv.Atoi(token)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid starting_token %q: must be a numeric index", token)
+		}
+		startIdx = idx
+	}
+
+	var entries []*csi.ListSnapshotsResponse_Entry
+	for i := startIdx; i < len(snapInfos); i++ {
+		if maxEntries > 0 && len(entries) >= maxEntries {
+			return &csi.ListSnapshotsResponse{
+				Entries:   entries,
+				NextToken: strconv.Itoa(i),
+			}, nil
+		}
+		s := snapInfos[i]
+		entries = append(entries, &csi.ListSnapshotsResponse_Entry{
+			Snapshot: &csi.Snapshot{
+				SnapshotId:     s.SnapshotID,
+				SourceVolumeId: s.SourceVolumeID,
+				SizeBytes:      s.SizeBytes,
+				CreationTime:   timestamppb.New(time.Unix(s.CreationTime, 0)),
+				ReadyToUse:     s.ReadyToUse,
+			},
+		})
+	}
+
+	return &csi.ListSnapshotsResponse{Entries: entries}, nil
 }
 
 var supportedAccessModes = map[csi.VolumeCapability_AccessMode_Mode]bool{
