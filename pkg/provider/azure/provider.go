@@ -5,13 +5,16 @@ package azure
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v5"
@@ -44,9 +47,9 @@ type Config struct {
 }
 
 type AzureProvider struct {
-	disksClient *armcompute.DisksClient
-	cred        *azidentity.DefaultAzureCredential
-	config      Config
+	disksClient     *armcompute.DisksClient
+	snapshotsClient *armcompute.SnapshotsClient
+	config          Config
 }
 
 func NewAzureProvider(params map[string]string) (*AzureProvider, error) {
@@ -83,6 +86,11 @@ func NewAzureProvider(params map[string]string) (*AzureProvider, error) {
 		return nil, fmt.Errorf("failed to create Azure disks client: %w", err)
 	}
 
+	snapshotsClient, err := armcompute.NewSnapshotsClient(subscriptionID, cred, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Azure snapshots client: %w", err)
+	}
+
 	var diskIOPS int64
 	if v := params["azureDiskIops"]; v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -113,8 +121,8 @@ func NewAzureProvider(params map[string]string) (*AzureProvider, error) {
 	}
 
 	return &AzureProvider{
-		disksClient: disksClient,
-		cred:        cred,
+		disksClient:     disksClient,
+		snapshotsClient: snapshotsClient,
 		config: Config{
 			SubscriptionID: subscriptionID,
 			ResourceGroup:  resourceGroup,
@@ -133,10 +141,19 @@ func isValidAzureResourceID(id string) bool {
 	return azureResourceIDPattern.MatchString(id)
 }
 
+func isNotFound(err error) bool {
+	var respErr *azcore.ResponseError
+	if errors.As(err, &respErr) {
+		return respErr.StatusCode == http.StatusNotFound
+	}
+	return false
+}
+
 var azureDiskNameInvalidChars = regexp.MustCompile(`[^a-zA-Z0-9_.\-]`)
 
 const (
 	azureDiskNamePrefix = "csi-vol-"
+	azureSnapNamePrefix = "csi-snap-"
 	azureDiskNameMaxLen = 80
 )
 
@@ -147,6 +164,20 @@ func (p *AzureProvider) diskName(volumeID string) string {
 		name = name[:azureDiskNameMaxLen]
 	}
 	return name
+}
+
+func (p *AzureProvider) snapName(snapshotID string) string {
+	sanitized := azureDiskNameInvalidChars.ReplaceAllString(snapshotID, "-")
+	name := azureSnapNamePrefix + sanitized
+	if len(name) > azureDiskNameMaxLen {
+		name = name[:azureDiskNameMaxLen]
+	}
+	return name
+}
+
+func (p *AzureProvider) diskResourceID(name string) string {
+	return fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Compute/disks/%s",
+		p.config.SubscriptionID, p.config.ResourceGroup, name)
 }
 
 func (p *AzureProvider) CreateVolume(volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
@@ -344,6 +375,166 @@ func (p *AzureProvider) ExpandVolume(volumeID string, newSizeBytes int64) error 
 	return nil
 }
 
-func (p *AzureProvider) credential() *azidentity.DefaultAzureCredential {
-	return p.cred
+// CreateSnapshot creates an Azure snapshot from the given volume.
+func (p *AzureProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID string) (*provider.SnapshotInfo, error) {
+	sourceDiskName := p.diskName(volumeID)
+	snapName := p.snapName(snapshotID)
+
+	diskResp, err := p.disksClient.Get(ctx, p.config.ResourceGroup, sourceDiskName, nil)
+	if err != nil {
+		return nil, fmt.Errorf("cannot find source disk %s for snapshot: %w", sourceDiskName, err)
+	}
+	sourceResourceID := *diskResp.ID
+
+	logger.Printf("Creating Azure snapshot %s from disk %s", snapName, sourceDiskName)
+
+	poller, err := p.snapshotsClient.BeginCreateOrUpdate(ctx, p.config.ResourceGroup, snapName,
+		armcompute.Snapshot{
+			Location: to.Ptr(p.config.Location),
+			Properties: &armcompute.SnapshotProperties{
+				CreationData: &armcompute.CreationData{
+					CreateOption:     to.Ptr(armcompute.DiskCreateOptionCopy),
+					SourceResourceID: to.Ptr(sourceResourceID),
+				},
+			},
+			Tags: map[string]*string{
+				volumeTagKey:          to.Ptr(volumeID),
+				"caa-csi-snapshot-id": to.Ptr(snapshotID),
+			},
+		}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin creating snapshot %s: %w", snapName, err)
+	}
+
+	result, err := poller.PollUntilDone(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create snapshot %s: %w", snapName, err)
+	}
+
+	var sizeBytes int64
+	if result.Properties != nil && result.Properties.DiskSizeGB != nil {
+		sizeBytes = int64(*result.Properties.DiskSizeGB) * 1024 * 1024 * 1024
+	}
+	var creationTime int64
+	if result.Properties != nil && result.Properties.TimeCreated != nil {
+		creationTime = result.Properties.TimeCreated.Unix()
+	}
+
+	return &provider.SnapshotInfo{
+		SnapshotID:     snapshotID,
+		SourceVolumeID: volumeID,
+		SizeBytes:      sizeBytes,
+		CreationTime:   creationTime,
+		ReadyToUse:     result.Properties != nil && result.Properties.ProvisioningState != nil && *result.Properties.ProvisioningState == "Succeeded",
+	}, nil
 }
+
+// DeleteSnapshot deletes an Azure snapshot.
+func (p *AzureProvider) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	snapName := p.snapName(snapshotID)
+	logger.Printf("Deleting Azure snapshot %s", snapName)
+
+	poller, err := p.snapshotsClient.BeginDelete(ctx, p.config.ResourceGroup, snapName, nil)
+	if err != nil {
+		if isNotFound(err) {
+			logger.Printf("Snapshot %s not found, nothing to delete", snapName)
+			return nil
+		}
+		return fmt.Errorf("failed to begin deleting snapshot %s: %w", snapName, err)
+	}
+	if _, err := poller.PollUntilDone(ctx, nil); err != nil {
+		return fmt.Errorf("failed to delete snapshot %s: %w", snapName, err)
+	}
+
+	logger.Printf("Deleted Azure snapshot %s", snapName)
+	return nil
+}
+
+// ListSnapshots lists Azure snapshots. If volumeID is non-empty, only snapshots
+// for that volume are returned; otherwise all managed snapshots are listed.
+func (p *AzureProvider) ListSnapshots(ctx context.Context, volumeID string) ([]*provider.SnapshotInfo, error) {
+	pager := p.snapshotsClient.NewListByResourceGroupPager(p.config.ResourceGroup, nil)
+	var snaps []*provider.SnapshotInfo
+
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("listing snapshots: %w", err)
+		}
+		for _, s := range page.Value {
+			if s.Name == nil || !strings.HasPrefix(*s.Name, azureSnapNamePrefix) {
+				continue
+			}
+			if s.Tags == nil {
+				continue
+			}
+			snapIDPtr, ok := s.Tags["caa-csi-snapshot-id"]
+			if !ok || snapIDPtr == nil {
+				continue
+			}
+			sourceVolPtr := s.Tags[volumeTagKey]
+			if volumeID != "" {
+				if sourceVolPtr == nil || *sourceVolPtr != volumeID {
+					continue
+				}
+			}
+			sourceVolID := ""
+			if sourceVolPtr != nil {
+				sourceVolID = *sourceVolPtr
+			}
+			var sizeBytes int64
+			if s.Properties != nil && s.Properties.DiskSizeGB != nil {
+				sizeBytes = int64(*s.Properties.DiskSizeGB) * 1024 * 1024 * 1024
+			}
+			var creationTime int64
+			if s.Properties != nil && s.Properties.TimeCreated != nil {
+				creationTime = s.Properties.TimeCreated.Unix()
+			}
+			snaps = append(snaps, &provider.SnapshotInfo{
+				SnapshotID:     *snapIDPtr,
+				SourceVolumeID: sourceVolID,
+				SizeBytes:      sizeBytes,
+				CreationTime:   creationTime,
+				ReadyToUse:     s.Properties != nil && s.Properties.ProvisioningState != nil && *s.Properties.ProvisioningState == "Succeeded",
+			})
+		}
+	}
+	return snaps, nil
+}
+
+// FindSnapshot looks up a single snapshot by its CSI snapshot name.
+// Returns nil, nil if the snapshot does not exist.
+func (p *AzureProvider) FindSnapshot(ctx context.Context, snapshotID string) (*provider.SnapshotInfo, error) {
+	snapName := p.snapName(snapshotID)
+	result, err := p.snapshotsClient.Get(ctx, p.config.ResourceGroup, snapName, nil)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get snapshot %s: %w", snapName, err)
+	}
+
+	sourceVolID := ""
+	if result.Tags != nil {
+		if v, ok := result.Tags[volumeTagKey]; ok && v != nil {
+			sourceVolID = *v
+		}
+	}
+	var sizeBytes int64
+	if result.Properties != nil && result.Properties.DiskSizeGB != nil {
+		sizeBytes = int64(*result.Properties.DiskSizeGB) * 1024 * 1024 * 1024
+	}
+	var creationTime int64
+	if result.Properties != nil && result.Properties.TimeCreated != nil {
+		creationTime = result.Properties.TimeCreated.Unix()
+	}
+
+	return &provider.SnapshotInfo{
+		SnapshotID:     snapshotID,
+		SourceVolumeID: sourceVolID,
+		SizeBytes:      sizeBytes,
+		CreationTime:   creationTime,
+		ReadyToUse:     result.Properties != nil && result.Properties.ProvisioningState != nil && *result.Properties.ProvisioningState == "Succeeded",
+	}, nil
+}
+
