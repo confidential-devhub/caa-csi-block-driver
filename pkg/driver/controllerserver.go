@@ -97,6 +97,13 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 			volInfo, err = cloner.CreateVolumeFromSnapshot(req.GetName(), snapID, capacity)
 		case src.GetVolume() != nil:
 			srcVolID := src.GetVolume().GetVolumeId()
+			exists, existsErr := p.VolumeExists(srcVolID)
+			if existsErr != nil {
+				return nil, status.Errorf(codes.Internal, "failed to verify source volume %s: %v", srcVolID, existsErr)
+			}
+			if !exists {
+				return nil, status.Errorf(codes.NotFound, "source volume %s not found", srcVolID)
+			}
 			cloner, ok := p.(provider.VolumeCloner)
 			if !ok {
 				return nil, status.Errorf(codes.Unimplemented, "provider does not support volume cloning")
@@ -134,13 +141,17 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		volumeCtx[k] = v
 	}
 
-	return &csi.CreateVolumeResponse{
-		Volume: &csi.Volume{
-			VolumeId:      req.GetName(),
-			CapacityBytes: capacity,
-			VolumeContext: volumeCtx,
-		},
-	}, nil
+	vol := &csi.Volume{
+		VolumeId:      req.GetName(),
+		CapacityBytes: capacity,
+		VolumeContext: volumeCtx,
+	}
+
+	if src := req.GetVolumeContentSource(); src != nil {
+		vol.ContentSource = src
+	}
+
+	return &csi.CreateVolumeResponse{Volume: vol}, nil
 }
 
 func (cs *controllerServer) DeleteVolume(_ context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
@@ -250,6 +261,13 @@ func (cs *controllerServer) ControllerGetCapabilities(_ context.Context, _ *csi.
 				Type: &csi.ControllerServiceCapability_Rpc{
 					Rpc: &csi.ControllerServiceCapability_RPC{
 						Type: csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
+					},
+				},
+			},
+			{
+				Type: &csi.ControllerServiceCapability_Rpc{
+					Rpc: &csi.ControllerServiceCapability_RPC{
+						Type: csi.ControllerServiceCapability_RPC_CLONE_VOLUME,
 					},
 				},
 			},
