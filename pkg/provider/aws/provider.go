@@ -24,6 +24,8 @@ import (
 
 var logger = log.New(log.Writer(), "[caa-csi/aws] ", log.LstdFlags|log.Lmsgprefix)
 
+var _ provider.VolumeCloner = (*AWSProvider)(nil)
+
 func init() {
 	provider.RegisterProvider("aws", func(params map[string]string) (provider.BlockVolumeProvider, error) {
 		return NewAWSProvider(params)

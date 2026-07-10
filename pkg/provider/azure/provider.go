@@ -24,6 +24,8 @@ import (
 
 var logger = log.New(log.Writer(), "[caa-csi/azure] ", log.LstdFlags|log.Lmsgprefix)
 
+var _ provider.VolumeCloner = (*AzureProvider)(nil)
+
 func init() {
 	provider.RegisterProvider("azure", func(params map[string]string) (provider.BlockVolumeProvider, error) {
 		return NewAzureProvider(params)
@@ -34,6 +36,7 @@ const (
 	defaultDiskSKU = "StandardSSD_LRS"
 	volumeTagKey   = "caa-csi-volume-id"
 	waitTimeout    = 5 * time.Minute
+	gib            = 1024 * 1024 * 1024
 )
 
 type Config struct {
@@ -175,9 +178,37 @@ func (p *AzureProvider) snapName(snapshotID string) string {
 	return name
 }
 
+func bytesToGiB(sizeBytes int64) int32 {
+	sizeGiB := int32((sizeBytes + gib - 1) / gib)
+	if sizeGiB == 0 {
+		sizeGiB = 1
+	}
+	return sizeGiB
+}
+
 func (p *AzureProvider) diskResourceID(name string) string {
 	return fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Compute/disks/%s",
 		p.config.SubscriptionID, p.config.ResourceGroup, name)
+}
+
+func (p *AzureProvider) buildDiskProperties(creationData *armcompute.CreationData, sizeGiB int32) *armcompute.DiskProperties {
+	props := &armcompute.DiskProperties{
+		CreationData: creationData,
+		DiskSizeGB:   to.Ptr(sizeGiB),
+	}
+	if p.config.DiskIOPS > 0 {
+		props.DiskIOPSReadWrite = to.Ptr(p.config.DiskIOPS)
+	}
+	if p.config.DiskMBps > 0 {
+		props.DiskMBpsReadWrite = to.Ptr(p.config.DiskMBps)
+	}
+	if p.config.DiskEncSetID != "" {
+		props.Encryption = &armcompute.Encryption{
+			DiskEncryptionSetID: to.Ptr(p.config.DiskEncSetID),
+			Type:                to.Ptr(armcompute.EncryptionTypeEncryptionAtRestWithCustomerKey),
+		}
+	}
+	return props
 }
 
 func (p *AzureProvider) CreateVolume(volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
@@ -194,36 +225,16 @@ func (p *AzureProvider) CreateVolume(volumeID string, sizeBytes int64) (*provide
 		return p.GetVolumeInfo(volumeID)
 	}
 
-	const gib = 1024 * 1024 * 1024
-	sizeGiB := int32((sizeBytes + gib - 1) / gib)
-	if sizeGiB == 0 {
-		sizeGiB = 1
-	}
-
+	sizeGiB := bytesToGiB(sizeBytes)
 	logger.Printf("Creating Azure Managed Disk %s (%d GiB, sku=%s, location=%s)",
 		name, sizeGiB, p.config.DiskSKU, p.config.Location)
 
-	diskProps := &armcompute.DiskProperties{
-		CreationData: &armcompute.CreationData{
-			CreateOption: to.Ptr(armcompute.DiskCreateOptionEmpty),
-		},
-		DiskSizeGB: to.Ptr(sizeGiB),
-	}
-	if p.config.DiskIOPS > 0 {
-		diskProps.DiskIOPSReadWrite = to.Ptr(p.config.DiskIOPS)
-	}
-	if p.config.DiskMBps > 0 {
-		diskProps.DiskMBpsReadWrite = to.Ptr(p.config.DiskMBps)
-	}
-	if p.config.DiskEncSetID != "" {
-		diskProps.Encryption = &armcompute.Encryption{
-			DiskEncryptionSetID: to.Ptr(p.config.DiskEncSetID),
-			Type:                to.Ptr(armcompute.EncryptionTypeEncryptionAtRestWithCustomerKey),
-		}
-	}
+	diskProps := p.buildDiskProperties(&armcompute.CreationData{
+		CreateOption: to.Ptr(armcompute.DiskCreateOptionEmpty),
+	}, sizeGiB)
 
 	disk := armcompute.Disk{
-		Location:   to.Ptr(p.config.Location),
+		Location: to.Ptr(p.config.Location),
 		SKU: &armcompute.DiskSKU{
 			Name: to.Ptr(armcompute.DiskStorageAccountTypes(p.config.DiskSKU)),
 		},
@@ -272,7 +283,7 @@ func (p *AzureProvider) DeleteVolume(volumeID string) error {
 
 	poller, err := p.disksClient.BeginDelete(ctx, p.config.ResourceGroup, name, nil)
 	if err != nil {
-		if strings.Contains(err.Error(), "ResourceNotFound") || strings.Contains(err.Error(), "NotFound") {
+		if isNotFound(err) {
 			logger.Printf("Disk %s not found, nothing to delete", name)
 			return nil
 		}
@@ -325,7 +336,7 @@ func (p *AzureProvider) VolumeExists(volumeID string) (bool, error) {
 
 	_, err := p.disksClient.Get(ctx, p.config.ResourceGroup, name, nil)
 	if err != nil {
-		if strings.Contains(err.Error(), "ResourceNotFound") || strings.Contains(err.Error(), "NotFound") {
+		if isNotFound(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("failed to check disk %s: %w", name, err)
@@ -333,17 +344,12 @@ func (p *AzureProvider) VolumeExists(volumeID string) (bool, error) {
 	return true, nil
 }
 
-// ExpandVolume resizes an Azure Managed Disk to newSizeBytes.
 func (p *AzureProvider) ExpandVolume(volumeID string, newSizeBytes int64) error {
 	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
 	defer cancel()
 	name := p.diskName(volumeID)
 
-	const gib = 1024 * 1024 * 1024
-	newSizeGiB := int32((newSizeBytes + gib - 1) / gib)
-	if newSizeGiB == 0 {
-		newSizeGiB = 1
-	}
+	newSizeGiB := bytesToGiB(newSizeBytes)
 
 	resp, err := p.disksClient.Get(ctx, p.config.ResourceGroup, name, nil)
 	if err != nil {
@@ -375,7 +381,135 @@ func (p *AzureProvider) ExpandVolume(volumeID string, newSizeBytes int64) error 
 	return nil
 }
 
-// CreateSnapshot creates an Azure snapshot from the given volume.
+func (p *AzureProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
+	name := p.diskName(volumeID)
+
+	exists, err := p.VolumeExists(volumeID)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		logger.Printf("Volume %s already exists, reusing", volumeID)
+		return p.GetVolumeInfo(volumeID)
+	}
+
+	sName := p.snapName(snapshotID)
+	sizeGiB := bytesToGiB(sizeBytes)
+	snapResourceID := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Compute/snapshots/%s",
+		p.config.SubscriptionID, p.config.ResourceGroup, sName)
+
+	logger.Printf("Creating Azure Managed Disk %s from snapshot %s (%d GiB)", name, sName, sizeGiB)
+
+	diskProps := p.buildDiskProperties(&armcompute.CreationData{
+		CreateOption:     to.Ptr(armcompute.DiskCreateOptionCopy),
+		SourceResourceID: to.Ptr(snapResourceID),
+	}, sizeGiB)
+
+	disk := armcompute.Disk{
+		Location: to.Ptr(p.config.Location),
+		SKU: &armcompute.DiskSKU{
+			Name: to.Ptr(armcompute.DiskStorageAccountTypes(p.config.DiskSKU)),
+		},
+		Properties: diskProps,
+		Tags: map[string]*string{
+			volumeTagKey:      to.Ptr(volumeID),
+			"source-snapshot": to.Ptr(snapshotID),
+		},
+	}
+
+	poller, err := p.disksClient.BeginCreateOrUpdate(ctx, p.config.ResourceGroup, name, disk, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin creating disk from snapshot %s: %w", sName, err)
+	}
+	result, err := poller.PollUntilDone(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create disk from snapshot %s: %w", sName, err)
+	}
+
+	if result.ID == nil {
+		return nil, fmt.Errorf("Azure returned nil disk ID for %s", name)
+	}
+	diskID := *result.ID
+	return &provider.VolumeInfo{
+		VolumeID:  volumeID,
+		Path:      diskID,
+		SizeBytes: sizeBytes,
+		Provider:  "azure",
+		Metadata: map[string]string{
+			"cloud-volume-path": diskID,
+			"cloud-provider":    "azure",
+			"azure-disk-name":   name,
+			"source-snapshot":   snapshotID,
+		},
+	}, nil
+}
+
+// CreateVolumeFromVolume clones via direct disk copy (no intermediate snapshot).
+func (p *AzureProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
+	name := p.diskName(volumeID)
+	sourceName := p.diskName(sourceVolumeID)
+
+	exists, err := p.VolumeExists(volumeID)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		logger.Printf("Volume %s already exists, reusing", volumeID)
+		return p.GetVolumeInfo(volumeID)
+	}
+
+	sizeGiB := bytesToGiB(sizeBytes)
+	sourceResourceID := p.diskResourceID(sourceName)
+	logger.Printf("Cloning Azure Managed Disk %s → %s (%d GiB)", sourceName, name, sizeGiB)
+
+	diskProps := p.buildDiskProperties(&armcompute.CreationData{
+		CreateOption:     to.Ptr(armcompute.DiskCreateOptionCopy),
+		SourceResourceID: to.Ptr(sourceResourceID),
+	}, sizeGiB)
+
+	disk := armcompute.Disk{
+		Location: to.Ptr(p.config.Location),
+		SKU: &armcompute.DiskSKU{
+			Name: to.Ptr(armcompute.DiskStorageAccountTypes(p.config.DiskSKU)),
+		},
+		Properties: diskProps,
+		Tags: map[string]*string{
+			volumeTagKey:    to.Ptr(volumeID),
+			"source-volume": to.Ptr(sourceVolumeID),
+		},
+	}
+
+	poller, err := p.disksClient.BeginCreateOrUpdate(ctx, p.config.ResourceGroup, name, disk, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin cloning disk %s: %w", sourceName, err)
+	}
+	result, err := poller.PollUntilDone(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to clone disk %s: %w", sourceName, err)
+	}
+
+	if result.ID == nil {
+		return nil, fmt.Errorf("Azure returned nil disk ID for %s", name)
+	}
+	diskID := *result.ID
+	return &provider.VolumeInfo{
+		VolumeID:  volumeID,
+		Path:      diskID,
+		SizeBytes: sizeBytes,
+		Provider:  "azure",
+		Metadata: map[string]string{
+			"cloud-volume-path": diskID,
+			"cloud-provider":    "azure",
+			"azure-disk-name":   name,
+			"source-volume":     sourceVolumeID,
+		},
+	}, nil
+}
+
 func (p *AzureProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID string) (*provider.SnapshotInfo, error) {
 	sourceDiskName := p.diskName(volumeID)
 	snapName := p.snapName(snapshotID)
@@ -383,6 +517,9 @@ func (p *AzureProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID
 	diskResp, err := p.disksClient.Get(ctx, p.config.ResourceGroup, sourceDiskName, nil)
 	if err != nil {
 		return nil, fmt.Errorf("cannot find source disk %s for snapshot: %w", sourceDiskName, err)
+	}
+	if diskResp.ID == nil {
+		return nil, fmt.Errorf("Azure returned nil disk ID for %s", sourceDiskName)
 	}
 	sourceResourceID := *diskResp.ID
 
@@ -429,7 +566,6 @@ func (p *AzureProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID
 	}, nil
 }
 
-// DeleteSnapshot deletes an Azure snapshot.
 func (p *AzureProvider) DeleteSnapshot(ctx context.Context, snapshotID string) error {
 	snapName := p.snapName(snapshotID)
 	logger.Printf("Deleting Azure snapshot %s", snapName)
@@ -450,8 +586,7 @@ func (p *AzureProvider) DeleteSnapshot(ctx context.Context, snapshotID string) e
 	return nil
 }
 
-// ListSnapshots lists Azure snapshots. If volumeID is non-empty, only snapshots
-// for that volume are returned; otherwise all managed snapshots are listed.
+// If volumeID is non-empty, only snapshots for that volume are returned.
 func (p *AzureProvider) ListSnapshots(ctx context.Context, volumeID string) ([]*provider.SnapshotInfo, error) {
 	pager := p.snapshotsClient.NewListByResourceGroupPager(p.config.ResourceGroup, nil)
 	var snaps []*provider.SnapshotInfo
@@ -502,7 +637,6 @@ func (p *AzureProvider) ListSnapshots(ctx context.Context, volumeID string) ([]*
 	return snaps, nil
 }
 
-// FindSnapshot looks up a single snapshot by its CSI snapshot name.
 // Returns nil, nil if the snapshot does not exist.
 func (p *AzureProvider) FindSnapshot(ctx context.Context, snapshotID string) (*provider.SnapshotInfo, error) {
 	snapName := p.snapName(snapshotID)
