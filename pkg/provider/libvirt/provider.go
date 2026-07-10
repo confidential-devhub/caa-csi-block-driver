@@ -5,6 +5,7 @@ package libvirt
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -12,6 +13,8 @@ import (
 
 	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
+
+var _ provider.VolumeCloner = (*LibvirtProvider)(nil)
 
 var logger = log.New(log.Writer(), "[caa-csi/libvirt] ", log.LstdFlags|log.Lmsgprefix)
 
@@ -133,4 +136,84 @@ func (p *LibvirtProvider) VolumeExists(volumeID string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("failed to check volume %s: %w", volPath, err)
+}
+
+func (p *LibvirtProvider) CreateVolumeFromSnapshot(_, snapshotID string, _ int64) (*provider.VolumeInfo, error) {
+	return nil, fmt.Errorf("libvirt provider does not support snapshots (snapshot %s)", snapshotID)
+}
+
+// CreateVolumeFromVolume clones a volume via file copy. Unlike AWS (point-in-time
+// snapshot) or Azure (atomic server-side copy), this performs a userspace io.Copy
+// which is NOT atomic — cloning a source that is actively being written may
+// produce a crash-inconsistent image. Callers should ensure the source PVC is
+// not mounted read-write during the clone operation.
+func (p *LibvirtProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+	srcPath := p.volumePath(sourceVolumeID)
+	if _, err := os.Stat(srcPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("source volume %s not found at %s", sourceVolumeID, srcPath)
+		}
+		return nil, fmt.Errorf("failed to access source volume %s: %w", sourceVolumeID, err)
+	}
+
+	dstPath := p.volumePath(volumeID)
+	if _, err := os.Stat(dstPath); err == nil {
+		logger.Printf("Volume %s already exists at %s, reusing", volumeID, dstPath)
+		return p.GetVolumeInfo(volumeID)
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to check destination volume %s: %w", dstPath, err)
+	}
+
+	logger.Printf("WARNING: cloning %s via file copy — source should not be actively written during this operation", sourceVolumeID)
+
+	srcFile, err := os.Open(srcPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open source volume %s: %w", srcPath, err)
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cloned volume %s: %w", dstPath, err)
+	}
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		dstFile.Close()
+		os.Remove(dstPath)
+		return nil, fmt.Errorf("failed to copy volume data: %w", err)
+	}
+	if err := dstFile.Close(); err != nil {
+		os.Remove(dstPath)
+		return nil, fmt.Errorf("failed to finalize cloned volume %s: %w", dstPath, err)
+	}
+
+	srcInfo, err := os.Stat(srcPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat source volume after copy: %w", err)
+	}
+	if sizeBytes > srcInfo.Size() {
+		if err := os.Truncate(dstPath, sizeBytes); err != nil {
+			return nil, fmt.Errorf("failed to resize cloned volume: %w", err)
+		}
+		// Grow the filesystem to fill the expanded space. Without this, the ext4
+		// FS remains at the source's original size and the extra space is
+		// unreachable — Kubernetes won't trigger NodeExpandVolume because the
+		// reported capacity already matches the PVC request.
+		if out, err := exec.Command("resize2fs", dstPath).CombinedOutput(); err != nil {
+			os.Remove(dstPath)
+			return nil, fmt.Errorf("failed to grow filesystem on cloned volume %s: %w (output: %s)", dstPath, err, string(out))
+		}
+	}
+
+	logger.Printf("Cloned volume %s from %s", volumeID, sourceVolumeID)
+	return &provider.VolumeInfo{
+		VolumeID:  volumeID,
+		Path:      dstPath,
+		SizeBytes: sizeBytes,
+		Provider:  "libvirt",
+		Metadata: map[string]string{
+			"cloud-volume-path": dstPath,
+			"cloud-provider":    "libvirt",
+		},
+	}, nil
 }

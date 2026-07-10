@@ -237,6 +237,73 @@ func TestDiskName(t *testing.T) {
 	}
 }
 
+func TestSnapName(t *testing.T) {
+	p := &AzureProvider{}
+
+	tests := []struct {
+		name       string
+		snapshotID string
+		want       string
+		maxLen     int
+	}{
+		{
+			name:       "simple snapshot ID",
+			snapshotID: "snap-abc123",
+			want:       "csi-snap-snap-abc123",
+			maxLen:     80,
+		},
+		{
+			name:       "special characters replaced",
+			snapshotID: "snap/test:id@1",
+			want:       "csi-snap-snap-test-id-1",
+			maxLen:     80,
+		},
+		{
+			name:       "very long snapshot ID is truncated",
+			snapshotID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			maxLen:     80,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := p.snapName(tt.snapshotID)
+			if len(got) > tt.maxLen {
+				t.Errorf("snapName(%q) length %d exceeds max %d", tt.snapshotID, len(got), tt.maxLen)
+			}
+			if tt.want != "" && got != tt.want {
+				t.Errorf("snapName(%q) = %q, want %q", tt.snapshotID, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBytesToGiB(t *testing.T) {
+	tests := []struct {
+		name      string
+		sizeBytes int64
+		want      int32
+	}{
+		{"zero bytes yields 1 GiB minimum", 0, 1},
+		{"one byte rounds up to 1 GiB", 1, 1},
+		{"exactly 1 GiB", 1024 * 1024 * 1024, 1},
+		{"1 GiB + 1 byte rounds up to 2", 1024*1024*1024 + 1, 2},
+		{"exactly 2 GiB", 2 * 1024 * 1024 * 1024, 2},
+		{"half GiB rounds up to 1", 512 * 1024 * 1024, 1},
+		{"10 GiB", 10 * 1024 * 1024 * 1024, 10},
+		{"10 GiB minus 1 byte rounds up to 10", 10*1024*1024*1024 - 1, 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := bytesToGiB(tt.sizeBytes)
+			if got != tt.want {
+				t.Errorf("bytesToGiB(%d) = %d, want %d", tt.sizeBytes, got, tt.want)
+			}
+		})
+	}
+}
+
 func contains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {
 		if s[i:i+len(substr)] == substr {
