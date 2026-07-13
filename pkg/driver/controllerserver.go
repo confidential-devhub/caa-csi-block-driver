@@ -510,7 +510,11 @@ func (cs *controllerServer) ValidateVolumeCapabilities(_ context.Context, req *c
 		return nil, status.Error(codes.InvalidArgument, "Volume capabilities missing")
 	}
 
-	if !cs.store.Exists(req.GetVolumeId()) {
+	exists, err := cs.store.Exists(req.GetVolumeId())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "checking volume %s: %v", req.GetVolumeId(), err)
+	}
+	if !exists {
 		return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
 	}
 

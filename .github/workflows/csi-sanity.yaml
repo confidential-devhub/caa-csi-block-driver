@@ -116,5 +116,5 @@ jobs:
             --csi.createmountpathcmd="/tmp/csi-test/create-path.sh" \
             --csi.removemountpathcmd="/tmp/csi-test/remove-path.sh" \
             --csi.checkpathcmd="/tmp/csi-test/check-path.sh" \
-            --ginkgo.skip="Snapshot|ListVolumes|GetCapacity|ControllerPublishVolume|ControllerUnpublishVolume|ExpandVolume|NodeExpandVolume|NodeGetVolumeStats|ModifyVolume|GroupController|volume from an existing source" \
+            --ginkgo.skip="Snapshot|ListVolumes|GetCapacity|ControllerPublishVolume|ControllerUnpublishVolume|ExpandVolume|NodeExpandVolume|ModifyVolume|GroupController|volume from an existing source" \
             --ginkgo.v
