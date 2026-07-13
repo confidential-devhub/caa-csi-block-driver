@@ -100,10 +100,21 @@ func (vs *volumeStore) RecoverFromCloud(params map[string]string) error {
 	return nil
 }
 
-func (vs *volumeStore) Exists(volumeID string) bool {
+func (vs *volumeStore) Exists(volumeID string) (bool, error) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 	_, err := os.Stat(filepath.Join(vs.dir, volumeID+".json"))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (vs *volumeStore) IsAccessible() bool {
+	_, err := os.Stat(vs.dir)
 	return err == nil
 }
 
