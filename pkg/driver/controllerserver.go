@@ -44,6 +44,14 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 
 	params := req.GetParameters()
+
+	if et := params["encrypt-type"]; et != "" {
+		if params["kbs-key-id"] == "" {
+			return nil, status.Error(codes.InvalidArgument,
+				"encrypt-type is set but kbs-key-id is missing: encryption requires a KBS key reference")
+		}
+	}
+
 	capacity := req.GetCapacityRange().GetRequiredBytes()
 	if capacity == 0 {
 		capacity = 1073741824 // default 1 GiB
