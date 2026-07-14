@@ -1,50 +1,47 @@
-## CAA CSI Block Driver Helm values
-
 # Cloud provider: aws, azure, or libvirt
-provider: azure
+provider: aws
+
+nameOverride: ""
+fullnameOverride: ""
 
 image:
   repository: ghcr.io/confidential-devhub/caa-csi-block-driver
-  tag: main
+  tag: 0.2.0
   pullPolicy: IfNotPresent
 
-# CSI driver name (should not need to change)
-driverName: caa-csi-block.csi.confidentialcontainers.io
+namespace:
+  name: caa-csi-block
+  create: true
 
-# Namespace for the CSI driver
-namespace: caa-csi-block
+sidecarImages:
+  provisioner: registry.k8s.io/sig-storage/csi-provisioner:v3.6.0
+  nodeDriverRegistrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.9.0
 
-# CSI sidecar image versions
-sidecars:
-  provisioner:
-    image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.0
-  nodeDriverRegistrar:
-    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.9.0
+csiDriver:
+  name: caa-csi-block.csi.confidentialcontainers.io
 
-# StorageClass configuration
-storageClass:
-  name: caa-block
-  reclaimPolicy: Delete
-  volumeBindingMode: Immediate
-
-# AWS-specific settings (used when provider=aws)
+# AWS provider settings
 aws:
-  region: us-east-2
-  availabilityZone: us-east-2c
+  region: ""
+  availabilityZone: ""
   volumeType: gp3
-  # Credentials secret name (must contain AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)
-  credentialsSecret: caa-csi-aws-creds
+  irsa:
+    enabled: false
+    roleArn: ""
+  staticCredentials:
+    enabled: false
+    secretName: caa-csi-aws-creds
 
-# Azure-specific settings (used when provider=azure)
+# Azure provider settings
 azure:
   subscriptionId: ""
   resourceGroup: ""
-  location: eastus
-  diskSKU: StandardSSD_LRS
+  location: ""
+  diskSku: StandardSSD_LRS
 
-# Libvirt-specific settings (used when provider=libvirt)
+# Libvirt provider settings
 libvirt:
-  volumePath: /var/lib/caa-csi-volumes
+  volumeDir: /var/lib/caa-csi-volumes
 
 # CDH encryption settings (optional, for CDH-based LUKS encryption)
 cdh:
@@ -53,5 +50,42 @@ cdh:
   sourceType: empty
   targetType: fileSystem
   filesystemType: ext4
-  # KBS URI for the encryption key (e.g. kbs:///default/luks-key/volume-key)
   key: ""
+
+storageClass:
+  create: true
+  name: ""
+  reclaimPolicy: Delete
+  volumeBindingMode: Immediate
+  allowVolumeExpansion: true
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+resources:
+  driver:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  provisioner:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+  nodeDriverRegistrar:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+nodePlugin:
+  privileged: true
