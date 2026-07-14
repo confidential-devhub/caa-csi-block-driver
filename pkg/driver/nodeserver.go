@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -258,6 +259,56 @@ func resizeFilesystem(ctx context.Context, devicePath, mountPath string) error {
 	return nil
 }
 
+// NodeGetVolumeStats returns filesystem usage statistics for the given volume.
+func (ns *nodeServer) NodeGetVolumeStats(_ context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
+	volumeID := req.GetVolumeId()
+	volumePath := req.GetVolumePath()
+	if volumeID == "" {
+		return nil, status.Error(codes.InvalidArgument, "Volume ID missing")
+	}
+	if volumePath == "" {
+		return nil, status.Error(codes.InvalidArgument, "Volume path missing")
+	}
+
+	if _, err := os.Stat(volumePath); os.IsNotExist(err) {
+		return nil, status.Errorf(codes.NotFound, "volume path %s does not exist", volumePath)
+	}
+
+	var statfs syscall.Statfs_t
+	if err := syscall.Statfs(volumePath, &statfs); err != nil {
+		return nil, status.Errorf(codes.Internal, "statfs on %s failed: %v", volumePath, err)
+	}
+
+	blockSize := int64(statfs.Frsize)
+	if blockSize == 0 {
+		blockSize = int64(statfs.Bsize)
+	}
+	totalBytes := int64(statfs.Blocks) * blockSize
+	availBytes := int64(statfs.Bavail) * blockSize
+	usedBytes := totalBytes - availBytes
+
+	totalInodes := int64(statfs.Files)
+	freeInodes := int64(statfs.Ffree)
+	usedInodes := totalInodes - freeInodes
+
+	return &csi.NodeGetVolumeStatsResponse{
+		Usage: []*csi.VolumeUsage{
+			{
+				Available: availBytes,
+				Total:     totalBytes,
+				Used:      usedBytes,
+				Unit:      csi.VolumeUsage_BYTES,
+			},
+			{
+				Available: freeInodes,
+				Total:     totalInodes,
+				Used:      usedInodes,
+				Unit:      csi.VolumeUsage_INODES,
+			},
+		},
+	}, nil
+}
+
 func (ns *nodeServer) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
 	return &csi.NodeGetCapabilitiesResponse{
 		Capabilities: []*csi.NodeServiceCapability{
@@ -275,12 +326,35 @@ func (ns *nodeServer) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapab
 					},
 				},
 			},
+			{
+				Type: &csi.NodeServiceCapability_Rpc{
+					Rpc: &csi.NodeServiceCapability_RPC{
+						Type: csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
+					},
+				},
+			},
 		},
 	}, nil
 }
 
 func (ns *nodeServer) NodeGetInfo(_ context.Context, _ *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
-	return &csi.NodeGetInfoResponse{
+	resp := &csi.NodeGetInfoResponse{
 		NodeId: ns.nodeID,
-	}, nil
+	}
+
+	region := os.Getenv("CSI_TOPOLOGY_REGION")
+	zone := os.Getenv("CSI_TOPOLOGY_ZONE")
+	if region != "" || zone != "" {
+		segments := make(map[string]string)
+		if region != "" {
+			segments["topology.caa-csi.io/region"] = region
+		}
+		if zone != "" {
+			segments["topology.caa-csi.io/zone"] = zone
+		}
+		resp.AccessibleTopology = &csi.Topology{Segments: segments}
+		nsLogger.Printf("NodeGetInfo: advertising topology segments: %v", segments)
+	}
+
+	return resp, nil
 }
