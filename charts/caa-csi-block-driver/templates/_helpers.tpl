@@ -58,3 +58,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-%s" (include "caa-csi.fullname" .) .Values.provider }}
 {{- end }}
 {{- end }}
+
+{{- define "caa-csi.bootstrapConfigMapName" -}}
+{{- printf "%s-bootstrap-params" (include "caa-csi.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}

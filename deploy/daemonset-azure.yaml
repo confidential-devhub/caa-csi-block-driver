@@ -71,6 +71,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            # Empty-store recovery / delete fallback (apply deploy/bootstrap-params-azure.yaml first).
+            - name: CSI_CLOUD_PROVIDER
+              value: "azure"
+            - name: CSI_BOOTSTRAP_PARAMS_FILE
+              value: /etc/caa-csi-block/bootstrap-params.json
           securityContext:
             privileged: true
           volumeMounts:
@@ -86,6 +91,9 @@ spec:
               name: shared-directvols
             - mountPath: /var/lib/caa-csi-block
               name: csi-data
+            - mountPath: /etc/caa-csi-block
+              name: bootstrap-params
+              readOnly: true
 
       volumes:
         - name: socket-dir
@@ -112,3 +120,6 @@ spec:
           hostPath:
             path: /var/lib/caa-csi-block
             type: DirectoryOrCreate
+        - name: bootstrap-params
+          configMap:
+            name: caa-csi-bootstrap-params

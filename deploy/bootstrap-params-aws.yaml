@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caa-csi-bootstrap-params
+  namespace: caa-csi-block
+  labels:
+    app: caa-csi-block
+data:
+  # Same keys as the AWS StorageClass — used for empty-store recovery / delete fallback.
+  bootstrap-params.json: |
+    {
+      "cloudProvider": "aws",
+      "awsRegion": "us-east-2",
+      "awsAvailabilityZone": "us-east-2c",
+      "awsVolumeType": "gp3"
+    }
