@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "caa-csi.bootstrapConfigMapName" . }}
+  namespace: {{ include "caa-csi.namespace" . }}
+  labels:
+    {{- include "caa-csi.labels" . | nindent 4 }}
+data:
+  bootstrap-params.json: |
+    {
+      "cloudProvider": {{ .Values.provider | quote }}
+      {{- if eq .Values.provider "aws" }},
+      "awsRegion": {{ required "aws.region is required when provider=aws" .Values.aws.region | quote }},
+      "awsAvailabilityZone": {{ required "aws.availabilityZone is required when provider=aws" .Values.aws.availabilityZone | quote }},
+      "awsVolumeType": {{ .Values.aws.volumeType | quote }}
+      {{- else if eq .Values.provider "azure" }},
+      "azureSubscriptionId": {{ required "azure.subscriptionId is required when provider=azure" .Values.azure.subscriptionId | quote }},
+      "azureResourceGroup": {{ required "azure.resourceGroup is required when provider=azure" .Values.azure.resourceGroup | quote }},
+      "azureLocation": {{ required "azure.location is required when provider=azure" .Values.azure.location | quote }},
+      "azureDiskSKU": {{ .Values.azure.diskSku | quote }}
+      {{- else if eq .Values.provider "libvirt" }},
+      "cloudProviderVolumePath": {{ .Values.libvirt.volumeDir | quote }}
+      {{- end }}
+    }

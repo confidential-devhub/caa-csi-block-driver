@@ -81,6 +81,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: CSI_CLOUD_PROVIDER
+              value: {{ .Values.provider | quote }}
+            - name: CSI_BOOTSTRAP_PARAMS_FILE
+              value: /etc/caa-csi-block/bootstrap-params.json
             {{- if eq .Values.provider "aws" }}
             - name: AWS_REGION
               value: {{ required "aws.region is required when provider=aws" .Values.aws.region | quote }}
@@ -116,6 +120,9 @@ spec:
               name: shared-directvols
             - mountPath: /var/lib/caa-csi-block
               name: csi-data
+            - mountPath: /etc/caa-csi-block
+              name: bootstrap-params
+              readOnly: true
             {{- if eq .Values.provider "libvirt" }}
             - mountPath: {{ .Values.libvirt.volumeDir }}
               name: libvirt-pool
@@ -146,6 +153,9 @@ spec:
           hostPath:
             path: /var/lib/caa-csi-block
             type: DirectoryOrCreate
+        - name: bootstrap-params
+          configMap:
+            name: {{ include "caa-csi.bootstrapConfigMapName" . }}
         {{- if eq .Values.provider "libvirt" }}
         - name: libvirt-pool
           hostPath:
