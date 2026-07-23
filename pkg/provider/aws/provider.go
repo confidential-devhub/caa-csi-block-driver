@@ -25,6 +25,7 @@ import (
 var logger = log.New(log.Writer(), "[caa-csi/aws] ", log.LstdFlags|log.Lmsgprefix)
 
 var _ provider.VolumeCloner = (*AWSProvider)(nil)
+var _ provider.VolumeRecoverer = (*AWSProvider)(nil)
 
 func init() {
 	provider.RegisterProvider("aws", func(params map[string]string) (provider.BlockVolumeProvider, error) {
@@ -56,6 +57,8 @@ type AWSProvider struct {
 }
 
 // NewAWSProvider creates an AWSProvider from StorageClass parameters.
+// awsAvailabilityZone is required for CreateVolume but optional for
+// list/delete/get/recovery operations that look up volumes by tag.
 func NewAWSProvider(params map[string]string) (*AWSProvider, error) {
 	region := params["awsRegion"]
 	if region == "" {
@@ -63,9 +66,6 @@ func NewAWSProvider(params map[string]string) (*AWSProvider, error) {
 	}
 
 	az := params["awsAvailabilityZone"]
-	if az == "" {
-		return nil, fmt.Errorf("awsAvailabilityZone is required for aws provider")
-	}
 
 	volType := params["awsVolumeType"]
 	if volType == "" {
@@ -140,6 +140,10 @@ func newEC2Client(cfg Config) (*ec2.Client, error) {
 
 func (p *AWSProvider) CreateVolume(volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	ctx := context.TODO()
+
+	if p.config.AvailabilityZone == "" {
+		return nil, fmt.Errorf("awsAvailabilityZone is required to create volumes")
+	}
 
 	exists, err := p.VolumeExists(volumeID)
 	if err != nil {
@@ -504,9 +508,60 @@ func (p *AWSProvider) ebsSnapshotToInfo(s *ec2types.Snapshot) *provider.Snapshot
 	}
 }
 
+// ListManagedVolumes returns all EBS volumes tagged with our CSI tag.
+func (p *AWSProvider) ListManagedVolumes() ([]*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
+
+	var vols []*provider.VolumeInfo
+	paginator := ec2.NewDescribeVolumesPaginator(p.ec2Client, &ec2.DescribeVolumesInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("tag-key"),
+				Values: []string{volumeTagKey},
+			},
+		},
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ec2.DescribeVolumes for recovery failed: %w", err)
+		}
+		for _, vol := range page.Volumes {
+			csiVolumeID := ""
+			for _, tag := range vol.Tags {
+				if aws.ToString(tag.Key) == volumeTagKey {
+					csiVolumeID = aws.ToString(tag.Value)
+				}
+			}
+			if csiVolumeID == "" {
+				continue
+			}
+			ebsID := aws.ToString(vol.VolumeId)
+			vols = append(vols, &provider.VolumeInfo{
+				VolumeID:  csiVolumeID,
+				Path:      ebsID,
+				SizeBytes: int64(aws.ToInt32(vol.Size)) * 1024 * 1024 * 1024,
+				Provider:  "aws",
+				Metadata: map[string]string{
+					"cloud-volume-path": ebsID,
+					"cloud-provider":    "aws",
+					"ebs-volume-id":     ebsID,
+					"availability-zone": aws.ToString(vol.AvailabilityZone),
+				},
+			})
+		}
+	}
+	return vols, nil
+}
+
 // CreateVolumeFromSnapshot creates a new EBS volume from an existing snapshot.
 func (p *AWSProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	ctx := context.TODO()
+
+	if p.config.AvailabilityZone == "" {
+		return nil, fmt.Errorf("awsAvailabilityZone is required to create volumes")
+	}
 
 	exists, err := p.VolumeExists(volumeID)
 	if err != nil {
@@ -584,6 +639,10 @@ func (p *AWSProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, size
 // The temporary snapshot is tagged for garbage collection.
 func (p *AWSProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	ctx := context.TODO()
+
+	if p.config.AvailabilityZone == "" {
+		return nil, fmt.Errorf("awsAvailabilityZone is required to create volumes")
+	}
 
 	exists, err := p.VolumeExists(volumeID)
 	if err != nil {

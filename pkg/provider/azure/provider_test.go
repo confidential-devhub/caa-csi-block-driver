@@ -97,10 +97,12 @@ func TestNewAzureProvider_Validation(t *testing.T) {
 			errSubstr: "azureResourceGroup is required",
 		},
 		{
-			name:      "missing location",
-			params:    map[string]string{"azureSubscriptionId": "sub", "azureResourceGroup": "rg"},
-			wantErr:   true,
-			errSubstr: "azureLocation is required",
+			name: "missing location allowed for recovery/list/delete",
+			params: map[string]string{
+				"azureSubscriptionId": "sub",
+				"azureResourceGroup":  "rg",
+			},
+			wantErr: false,
 		},
 		{
 			name:      "invalid IOPS - not a number",

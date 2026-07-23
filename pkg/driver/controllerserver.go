@@ -5,8 +5,10 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -27,9 +29,59 @@ type controllerServer struct {
 }
 
 func newControllerServer() *controllerServer {
-	return &controllerServer{
-		store: newVolumeStore(),
+	store := newVolumeStore()
+
+	if params := store.BootstrapParams(); params != nil {
+		if err := store.RecoverFromCloud(params); err != nil {
+			csLogger.Printf("cloud recovery failed (non-fatal): %v", err)
+		}
+	} else {
+		csLogger.Printf("No bootstrap params available, skipping cloud recovery (set CSI_CLOUD_PROVIDER / CSI_BOOTSTRAP_PARAMS_FILE for empty-store recovery)")
 	}
+
+	return &controllerServer{
+		store: store,
+	}
+}
+
+// loadVolumeRecord returns the local record, attempting cloud recovery first
+// when the record is missing.
+func (cs *controllerServer) loadVolumeRecord(volumeID string) (*volumeRecord, error) {
+	rec, err := cs.store.Load(volumeID)
+	if err == nil {
+		return rec, nil
+	}
+
+	if params := cs.store.BootstrapParams(); params != nil {
+		if recErr := cs.store.RecoverFromCloud(params); recErr != nil {
+			csLogger.Printf("cloud recovery before loading %s failed: %v", volumeID, recErr)
+		}
+		if rec, err2 := cs.store.Load(volumeID); err2 == nil {
+			return rec, nil
+		}
+	}
+	return nil, err
+}
+
+// resolveProviderParams picks cloud params for operations that may lack a
+// local volume record (delete, snapshot delete).
+func (cs *controllerServer) resolveProviderParams(secrets map[string]string) map[string]string {
+	if len(secrets) > 0 && secrets["cloudProvider"] != "" {
+		return secrets
+	}
+	return cs.store.BootstrapParams()
+}
+
+// volumeLookupStatus maps store/lookup errors to gRPC status codes:
+// missing record → NotFound; corrupt/unreadable/other → Internal.
+func volumeLookupStatus(kind, volumeID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return status.Errorf(codes.NotFound, "%s %s not found", kind, volumeID)
+	}
+	return status.Errorf(codes.Internal, "loading %s %s: %v", kind, volumeID, err)
 }
 
 func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
@@ -135,7 +187,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		CapacityBytes: capacity,
 		Params:        params,
 	}); err != nil {
-		csLogger.Printf("WARNING: failed to persist volume record for %s: %v (volume created in cloud but record may be lost)", req.GetName(), err)
+		csLogger.Printf("failed to persist volume record for %s: %v (volume created in cloud but record may be lost)", req.GetName(), err)
 	}
 	csLogger.Printf("CreateVolume: %s (provider=%s, path=%s)", req.GetName(), volInfo.Provider, volInfo.Path)
 
@@ -168,13 +220,21 @@ func (cs *controllerServer) DeleteVolume(_ context.Context, req *csi.DeleteVolum
 		return nil, status.Error(codes.InvalidArgument, "Volume ID missing")
 	}
 
-	rec, err := cs.store.Load(volumeID)
-	if err != nil {
-		csLogger.Printf("DeleteVolume: volume %s not found in store, skipping", volumeID)
-		return &csi.DeleteVolumeResponse{}, nil
+	var params map[string]string
+	if rec, err := cs.loadVolumeRecord(volumeID); err == nil {
+		params = rec.Params
+	} else {
+		params = cs.resolveProviderParams(req.GetSecrets())
+		if params == nil {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"volume %s not found in local store and no cloud provider params available for delete; "+
+					"configure CSI_CLOUD_PROVIDER (and provider params) or CSI_BOOTSTRAP_PARAMS_FILE so the cloud disk can be deleted",
+				volumeID)
+		}
+		csLogger.Printf("DeleteVolume: volume %s missing from store, deleting via bootstrap params", volumeID)
 	}
 
-	p, err := provider.NewBlockVolumeProvider(rec.Params)
+	p, err := provider.NewBlockVolumeProvider(params)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create provider for delete: %v", err)
 	}
@@ -203,9 +263,9 @@ func (cs *controllerServer) ControllerExpandVolume(_ context.Context, req *csi.C
 		return nil, status.Error(codes.InvalidArgument, "Required capacity missing")
 	}
 
-	rec, err := cs.store.Load(volumeID)
+	rec, err := cs.loadVolumeRecord(volumeID)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "volume %s not found: %v", volumeID, err)
+		return nil, volumeLookupStatus("volume", volumeID, err)
 	}
 
 	if rec.CapacityBytes >= requiredBytes {
@@ -293,9 +353,9 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 		return nil, status.Error(codes.InvalidArgument, "Snapshot name missing")
 	}
 
-	rec, err := cs.store.Load(sourceVolumeID)
+	rec, err := cs.loadVolumeRecord(sourceVolumeID)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "source volume %s not found: %v", sourceVolumeID, err)
+		return nil, volumeLookupStatus("source volume", sourceVolumeID, err)
 	}
 
 	p, err := provider.NewBlockVolumeProvider(rec.Params)
@@ -353,16 +413,11 @@ func (cs *controllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteS
 		return nil, status.Error(codes.InvalidArgument, "Snapshot ID missing")
 	}
 
-	// Use secrets from the request if available (preferred for deterministic routing),
-	// otherwise fall back to params from any volume in the store.
-	params := req.GetSecrets()
-	if len(params) == 0 || params["cloudProvider"] == "" {
-		params = cs.store.AnyParams()
-	}
+	params := cs.resolveProviderParams(req.GetSecrets())
 	if params == nil {
-		csLogger.Printf("DeleteSnapshot: no volumes in store and no secrets provided, cannot determine provider for snapshot %s", snapshotID)
+		csLogger.Printf("DeleteSnapshot: no bootstrap params available for snapshot %s", snapshotID)
 		return nil, status.Errorf(codes.FailedPrecondition,
-			"cannot determine provider for snapshot %s: no volumes in store and no secrets provided", snapshotID)
+			"cannot determine provider for snapshot %s: configure secrets, CSI_CLOUD_PROVIDER, or CSI_BOOTSTRAP_PARAMS_FILE", snapshotID)
 	}
 
 	p, err := provider.NewBlockVolumeProvider(params)
@@ -389,13 +444,13 @@ func (cs *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnap
 
 	var params map[string]string
 	if sourceVolumeID != "" {
-		rec, err := cs.store.Load(sourceVolumeID)
+		rec, err := cs.loadVolumeRecord(sourceVolumeID)
 		if err != nil {
-			return nil, status.Errorf(codes.NotFound, "source volume %s not found: %v", sourceVolumeID, err)
+			return nil, volumeLookupStatus("source volume", sourceVolumeID, err)
 		}
 		params = rec.Params
 	} else {
-		params = cs.store.AnyParams()
+		params = cs.store.BootstrapParams()
 	}
 
 	if params == nil {
@@ -506,12 +561,8 @@ func (cs *controllerServer) ValidateVolumeCapabilities(_ context.Context, req *c
 		return nil, status.Error(codes.InvalidArgument, "Volume capabilities missing")
 	}
 
-	exists, err := cs.store.Exists(req.GetVolumeId())
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "checking volume %s: %v", req.GetVolumeId(), err)
-	}
-	if !exists {
-		return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
+	if _, err := cs.loadVolumeRecord(req.GetVolumeId()); err != nil {
+		return nil, volumeLookupStatus("volume", req.GetVolumeId(), err)
 	}
 
 	if err := validateVolumeCapabilities(req.GetVolumeCapabilities()); err != nil {
