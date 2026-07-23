@@ -35,11 +35,20 @@ func newVolumeStore() *volumeStore {
 	return &volumeStore{dir: dir}
 }
 
-func (vs *volumeStore) Exists(volumeID string) bool {
+// Exists checks whether a volume record exists in the store.
+// Returns (false, nil) if the file simply doesn't exist, or (false, err)
+// if the check failed due to a permission or I/O error.
+func (vs *volumeStore) Exists(volumeID string) (bool, error) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 	_, err := os.Stat(filepath.Join(vs.dir, volumeID+".json"))
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 func (vs *volumeStore) Save(rec *volumeRecord) error {
