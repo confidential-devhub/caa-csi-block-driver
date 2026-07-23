@@ -388,7 +388,8 @@ func (p *AzureProvider) ExpandVolume(volumeID string, newSizeBytes int64) error 
 
 // ListManagedVolumes returns all Azure Managed Disks tagged with our CSI tag.
 func (p *AzureProvider) ListManagedVolumes() ([]*provider.VolumeInfo, error) {
-	ctx := context.TODO()
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
 
 	pager := p.disksClient.NewListByResourceGroupPager(p.config.ResourceGroup, nil)
 	var vols []*provider.VolumeInfo

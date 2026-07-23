@@ -116,6 +116,9 @@ func (vs *volumeStore) RecoverFromCloud(params map[string]string) error {
 		path := filepath.Join(vs.dir, vol.VolumeID+".json")
 		if _, err := os.Stat(path); err == nil {
 			continue
+		} else if err != nil && !os.IsNotExist(err) {
+			vsLogger.Printf("skipping recovery for %s: stat %s: %v", vol.VolumeID, path, err)
+			continue
 		}
 
 		rec := &volumeRecord{

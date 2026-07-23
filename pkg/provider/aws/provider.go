@@ -510,7 +510,8 @@ func (p *AWSProvider) ebsSnapshotToInfo(s *ec2types.Snapshot) *provider.Snapshot
 
 // ListManagedVolumes returns all EBS volumes tagged with our CSI tag.
 func (p *AWSProvider) ListManagedVolumes() ([]*provider.VolumeInfo, error) {
-	ctx := context.TODO()
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
 
 	var vols []*provider.VolumeInfo
 	paginator := ec2.NewDescribeVolumesPaginator(p.ec2Client, &ec2.DescribeVolumesInput{
