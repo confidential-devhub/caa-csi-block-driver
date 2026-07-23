@@ -407,6 +407,9 @@ func (p *AzureProvider) ListManagedVolumes() ([]*provider.VolumeInfo, error) {
 				continue
 			}
 			csiVolumeID := *tagVal
+			if csiVolumeID == "" {
+				continue
+			}
 			diskID := ""
 			if d.ID != nil {
 				diskID = *d.ID

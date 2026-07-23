@@ -5,8 +5,10 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +70,18 @@ func (cs *controllerServer) resolveProviderParams(secrets map[string]string) map
 		return secrets
 	}
 	return cs.store.BootstrapParams()
+}
+
+// volumeLookupStatus maps store/lookup errors to gRPC status codes:
+// missing record → NotFound; corrupt/unreadable/other → Internal.
+func volumeLookupStatus(kind, volumeID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return status.Errorf(codes.NotFound, "%s %s not found", kind, volumeID)
+	}
+	return status.Errorf(codes.Internal, "loading %s %s: %v", kind, volumeID, err)
 }
 
 func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
@@ -251,7 +265,7 @@ func (cs *controllerServer) ControllerExpandVolume(_ context.Context, req *csi.C
 
 	rec, err := cs.loadVolumeRecord(volumeID)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "volume %s not found: %v", volumeID, err)
+		return nil, volumeLookupStatus("volume", volumeID, err)
 	}
 
 	if rec.CapacityBytes >= requiredBytes {
@@ -341,7 +355,7 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 
 	rec, err := cs.loadVolumeRecord(sourceVolumeID)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "source volume %s not found: %v", sourceVolumeID, err)
+		return nil, volumeLookupStatus("source volume", sourceVolumeID, err)
 	}
 
 	p, err := provider.NewBlockVolumeProvider(rec.Params)
@@ -432,7 +446,7 @@ func (cs *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnap
 	if sourceVolumeID != "" {
 		rec, err := cs.loadVolumeRecord(sourceVolumeID)
 		if err != nil {
-			return nil, status.Errorf(codes.NotFound, "source volume %s not found: %v", sourceVolumeID, err)
+			return nil, volumeLookupStatus("source volume", sourceVolumeID, err)
 		}
 		params = rec.Params
 	} else {
@@ -548,7 +562,7 @@ func (cs *controllerServer) ValidateVolumeCapabilities(_ context.Context, req *c
 	}
 
 	if _, err := cs.loadVolumeRecord(req.GetVolumeId()); err != nil {
-		return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
+		return nil, volumeLookupStatus("volume", req.GetVolumeId(), err)
 	}
 
 	if err := validateVolumeCapabilities(req.GetVolumeCapabilities()); err != nil {

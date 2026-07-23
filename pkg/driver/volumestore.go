@@ -102,13 +102,17 @@ func (vs *volumeStore) RecoverFromCloud(params map[string]string) error {
 		return fmt.Errorf("listing managed volumes from cloud: %w", err)
 	}
 
-	paramsCopy := maps.Clone(params)
+	// Never persist long-lived credentials into the node-local store.
+	paramsCopy := sanitizePersistableParams(params)
 
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
 	recovered := 0
 	for _, vol := range vols {
+		if vol.VolumeID == "" {
+			continue
+		}
 		path := filepath.Join(vs.dir, vol.VolumeID+".json")
 		if _, err := os.Stat(path); err == nil {
 			continue
@@ -274,8 +278,25 @@ func (vs *volumeStore) writeManifestLocked() error {
 		return os.WriteFile(path, data, 0600)
 	}
 
+	var params map[string]string
+	for _, r := range recs {
+		if len(r.Params) > 0 && r.Params["cloudProvider"] != "" {
+			params = sanitizePersistableParams(r.Params)
+			break
+		}
+	}
+	if params == nil {
+		// Prefer keeping previously valid bootstrap params over writing an unusable manifest.
+		if existing, loadErr := vs.readManifestLocked(); loadErr == nil && existing != nil &&
+			len(existing.Params) > 0 && existing.Params["cloudProvider"] != "" {
+			params = sanitizePersistableParams(existing.Params)
+		} else {
+			params = map[string]string{}
+		}
+	}
+
 	m := volumeManifest{
-		Params:    maps.Clone(recs[0].Params),
+		Params:    params,
 		VolumeIDs: make([]string, 0, len(recs)),
 	}
 	for _, r := range recs {
@@ -354,8 +375,8 @@ func paramsFromEnv() map[string]string {
 		setIfNonEmpty(params, "awsRegion", firstNonEmpty(os.Getenv("CSI_AWS_REGION"), os.Getenv("AWS_REGION")))
 		setIfNonEmpty(params, "awsAvailabilityZone", firstNonEmpty(os.Getenv("CSI_AWS_AVAILABILITY_ZONE"), os.Getenv("AWS_AVAILABILITY_ZONE")))
 		setIfNonEmpty(params, "awsVolumeType", os.Getenv("CSI_AWS_VOLUME_TYPE"))
-		setIfNonEmpty(params, "awsAccessKeyId", os.Getenv("CSI_AWS_ACCESS_KEY_ID"))
-		setIfNonEmpty(params, "awsSecretKey", os.Getenv("CSI_AWS_SECRET_KEY"))
+		// Intentionally omit static AWS keys — use IRSA / the AWS SDK default chain
+		// (AWS_ACCESS_KEY_ID, instance profile, etc.) instead of persisting secrets.
 		setIfNonEmpty(params, "awsKmsKeyId", os.Getenv("CSI_AWS_KMS_KEY_ID"))
 	case "azure":
 		setIfNonEmpty(params, "azureSubscriptionId", firstNonEmpty(os.Getenv("CSI_AZURE_SUBSCRIPTION_ID"), os.Getenv("AZURE_SUBSCRIPTION_ID")))
@@ -384,4 +405,16 @@ func setIfNonEmpty(params map[string]string, key, value string) {
 	if value != "" {
 		params[key] = value
 	}
+}
+
+// sanitizePersistableParams returns a copy of params safe to write under the
+// node-local volume store (no long-lived cloud credentials).
+func sanitizePersistableParams(params map[string]string) map[string]string {
+	if params == nil {
+		return nil
+	}
+	out := maps.Clone(params)
+	delete(out, "awsAccessKeyId")
+	delete(out, "awsSecretKey")
+	return out
 }

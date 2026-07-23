@@ -149,9 +149,17 @@ func TestParamsFromEnvAWSAndAzure(t *testing.T) {
 	t.Setenv("CSI_CLOUD_PROVIDER", "aws")
 	t.Setenv("AWS_REGION", "us-east-2")
 	t.Setenv("CSI_AWS_AVAILABILITY_ZONE", "us-east-2c")
+	t.Setenv("CSI_AWS_ACCESS_KEY_ID", "AKIA_SHOULD_NOT_APPEAR")
+	t.Setenv("CSI_AWS_SECRET_KEY", "secret_should_not_appear")
 	params := paramsFromEnv()
 	if params["cloudProvider"] != "aws" || params["awsRegion"] != "us-east-2" || params["awsAvailabilityZone"] != "us-east-2c" {
 		t.Fatalf("unexpected aws env params: %#v", params)
+	}
+	if _, ok := params["awsAccessKeyId"]; ok {
+		t.Fatalf("static awsAccessKeyId must not be loaded from env: %#v", params)
+	}
+	if _, ok := params["awsSecretKey"]; ok {
+		t.Fatalf("static awsSecretKey must not be loaded from env: %#v", params)
 	}
 
 	t.Setenv("CSI_CLOUD_PROVIDER", "azure")
@@ -161,6 +169,63 @@ func TestParamsFromEnvAWSAndAzure(t *testing.T) {
 	params = paramsFromEnv()
 	if params["azureSubscriptionId"] != "sub-1" || params["azureResourceGroup"] != "rg-1" || params["azureLocation"] != "eastus" {
 		t.Fatalf("unexpected azure env params: %#v", params)
+	}
+}
+
+func TestWriteManifestSkipsRecordWithoutCloudProvider(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CSI_VOLUME_STORE_DIR", dir)
+	t.Setenv("CSI_CLOUD_PROVIDER", "")
+	t.Setenv("CSI_BOOTSTRAP_PARAMS_FILE", "")
+
+	vs := newVolumeStore()
+	// First on disk may be params-less; valid params should still win for the manifest.
+	if err := vs.Save(&volumeRecord{
+		VolumeID: "vol-bad",
+		Provider: "aws",
+		Path:     "path-bad",
+		Params:   map[string]string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := vs.Save(&volumeRecord{
+		VolumeID: "vol-good",
+		Provider: "aws",
+		Path:     "path-good",
+		Params: map[string]string{
+			"cloudProvider": "aws",
+			"awsRegion":     "eu-central-1",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, manifestFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m volumeManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Params["cloudProvider"] != "aws" || m.Params["awsRegion"] != "eu-central-1" {
+		t.Fatalf("manifest should use first record with cloudProvider, got %#v", m.Params)
+	}
+}
+
+func TestSanitizePersistableParams(t *testing.T) {
+	in := map[string]string{
+		"cloudProvider":  "aws",
+		"awsRegion":      "us-east-2",
+		"awsAccessKeyId": "AKIA...",
+		"awsSecretKey":   "secret",
+	}
+	out := sanitizePersistableParams(in)
+	if out["awsAccessKeyId"] != "" || out["awsSecretKey"] != "" {
+		t.Fatalf("secrets should be stripped: %#v", out)
+	}
+	if out["awsRegion"] != "us-east-2" || in["awsSecretKey"] != "secret" {
+		t.Fatalf("sanitize should copy and not mutate input: out=%#v in=%#v", out, in)
 	}
 }
 
