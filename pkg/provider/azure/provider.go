@@ -25,6 +25,7 @@ import (
 var logger = log.New(log.Writer(), "[caa-csi/azure] ", log.LstdFlags|log.Lmsgprefix)
 
 var _ provider.VolumeCloner = (*AzureProvider)(nil)
+var _ provider.VolumeRecoverer = (*AzureProvider)(nil)
 
 func init() {
 	provider.RegisterProvider("azure", func(params map[string]string) (provider.BlockVolumeProvider, error) {
@@ -66,10 +67,9 @@ func NewAzureProvider(params map[string]string) (*AzureProvider, error) {
 		return nil, fmt.Errorf("azureResourceGroup is required for azure provider")
 	}
 
+	// azureLocation is required for CreateVolume but optional for
+	// list/delete/get/recovery operations.
 	location := params["azureLocation"]
-	if location == "" {
-		return nil, fmt.Errorf("azureLocation is required for azure provider")
-	}
 
 	diskSKU := params["azureDiskSKU"]
 	if diskSKU == "" {
@@ -214,6 +214,11 @@ func (p *AzureProvider) buildDiskProperties(creationData *armcompute.CreationDat
 func (p *AzureProvider) CreateVolume(volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
 	defer cancel()
+
+	if p.config.Location == "" {
+		return nil, fmt.Errorf("azureLocation is required to create volumes")
+	}
+
 	name := p.diskName(volumeID)
 
 	exists, err := p.VolumeExists(volumeID)
@@ -381,9 +386,64 @@ func (p *AzureProvider) ExpandVolume(volumeID string, newSizeBytes int64) error 
 	return nil
 }
 
+// ListManagedVolumes returns all Azure Managed Disks tagged with our CSI tag.
+func (p *AzureProvider) ListManagedVolumes() ([]*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
+
+	pager := p.disksClient.NewListByResourceGroupPager(p.config.ResourceGroup, nil)
+	var vols []*provider.VolumeInfo
+
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("listing disks for recovery: %w", err)
+		}
+		for _, d := range page.Value {
+			if d.Tags == nil {
+				continue
+			}
+			tagVal, ok := d.Tags[volumeTagKey]
+			if !ok || tagVal == nil {
+				continue
+			}
+			csiVolumeID := *tagVal
+			if csiVolumeID == "" {
+				continue
+			}
+			diskID := ""
+			if d.ID != nil {
+				diskID = *d.ID
+			}
+			var sizeBytes int64
+			if d.Properties != nil && d.Properties.DiskSizeGB != nil {
+				sizeBytes = int64(*d.Properties.DiskSizeGB) * 1024 * 1024 * 1024
+			}
+			vols = append(vols, &provider.VolumeInfo{
+				VolumeID:  csiVolumeID,
+				Path:      diskID,
+				SizeBytes: sizeBytes,
+				Provider:  "azure",
+				Metadata: map[string]string{
+					"cloud-volume-path": diskID,
+					"cloud-provider":    "azure",
+					"azure-disk-name":   p.diskName(csiVolumeID),
+					"azure-resource-id": diskID,
+				},
+			})
+		}
+	}
+	return vols, nil
+}
+
 func (p *AzureProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
 	defer cancel()
+
+	if p.config.Location == "" {
+		return nil, fmt.Errorf("azureLocation is required to create volumes")
+	}
+
 	name := p.diskName(volumeID)
 
 	exists, err := p.VolumeExists(volumeID)
@@ -450,6 +510,11 @@ func (p *AzureProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, si
 func (p *AzureProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
 	defer cancel()
+
+	if p.config.Location == "" {
+		return nil, fmt.Errorf("azureLocation is required to create volumes")
+	}
+
 	name := p.diskName(volumeID)
 	sourceName := p.diskName(sourceVolumeID)
 
@@ -511,6 +576,10 @@ func (p *AzureProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, 
 }
 
 func (p *AzureProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID string) (*provider.SnapshotInfo, error) {
+	if p.config.Location == "" {
+		return nil, fmt.Errorf("azureLocation is required to create snapshots")
+	}
+
 	sourceDiskName := p.diskName(volumeID)
 	snapName := p.snapName(snapshotID)
 
