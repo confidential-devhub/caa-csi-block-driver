@@ -7,7 +7,8 @@ provisions cloud block storage (AWS EBS, Azure Managed Disks) for Kata
 Containers **Peer Pods**. Unlike traditional CSI drivers that attach disks
 directly to the kubelet node, this driver creates cloud disks and passes
 metadata through to the Cloud API Adaptor (CAA), which attaches them to the
-PodVM at creation time.
+PodVM (Azure attaches disks during VM creation; AWS attaches them shortly
+after the instance reaches `running` state).
 
 ```
 ┌──────────────┐  PVC/PV  ┌──────────────┐  cloud_volumes  ┌─────────────┐
@@ -32,9 +33,10 @@ PodVM at creation time.
    → CSI driver creates the cloud volume (EBS / Managed Disk) via the provider
    API and persists a `volumeRecord` to the local store.
 3. Kubernetes scheduler selects a node for the pod.
-4. kubelet calls `NodeStageVolume` → CSI driver records the device mapping.
+4. kubelet calls `NodeStageVolume` → CSI driver stores the provider-returned
+   volume path (a cloud volume ID for AWS/Azure, or a local device for libvirt).
 5. kubelet calls `NodePublishVolume` → CSI driver writes a `mountInfo.json`
-   file under the Kata direct-volumes path so the kata-runtime can find it.
+   file under the Kata direct-volumes path so the CAA proxy can read it.
 
 ### 2. PodVM Attachment
 
