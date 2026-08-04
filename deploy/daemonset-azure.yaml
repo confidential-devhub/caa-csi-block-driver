@@ -71,7 +71,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            # Empty-store recovery / delete fallback (apply deploy/bootstrap-params-azure.yaml first).
+            # Empty-store recovery / delete fallback (optional — see deploy/bootstrap-params-azure.yaml).
             - name: CSI_CLOUD_PROVIDER
               value: "azure"
             - name: CSI_BOOTSTRAP_PARAMS_FILE
@@ -123,3 +123,4 @@ spec:
         - name: bootstrap-params
           configMap:
             name: caa-csi-bootstrap-params
+            optional: true

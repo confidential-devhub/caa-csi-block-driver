@@ -100,13 +100,18 @@ make build GOOS=linux GOARCH=amd64
 ### AWS (EBS)
 
 ```bash
+kubectl apply -f deploy/namespace.yaml
+
 # Create the AWS credentials secret
 kubectl create secret generic caa-csi-aws-creds \
   -n caa-csi-block \
   --from-literal=AWS_ACCESS_KEY_ID=<your-key> \
   --from-literal=AWS_SECRET_ACCESS_KEY=<your-secret>
 
-kubectl apply -f deploy/namespace.yaml
+# Optional: deploy bootstrap ConfigMap for empty-store recovery
+# Edit bootstrap-params-aws.yaml with your region and availability zone first
+kubectl apply -f deploy/bootstrap-params-aws.yaml
+
 kubectl apply -f deploy/rbac.yaml
 kubectl apply -f deploy/csi-driver.yaml
 kubectl apply -f deploy/daemonset-aws.yaml
@@ -122,6 +127,11 @@ Managed Identity, and environment variables. No secrets in StorageClass paramete
 kubectl apply -f deploy/namespace.yaml
 kubectl apply -f deploy/rbac.yaml
 kubectl apply -f deploy/csi-driver.yaml
+
+# Optional: deploy bootstrap ConfigMap for empty-store recovery
+# Edit bootstrap-params-azure.yaml with your subscription, resource group, and location first
+kubectl apply -f deploy/bootstrap-params-azure.yaml
+
 kubectl apply -f deploy/daemonset-azure.yaml
 
 # Edit storageclass-azure.yaml with your subscription, resource group, and location
