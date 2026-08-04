@@ -156,6 +156,7 @@ spec:
         - name: bootstrap-params
           configMap:
             name: {{ include "caa-csi.bootstrapConfigMapName" . }}
+            optional: true
         {{- if eq .Values.provider "libvirt" }}
         - name: libvirt-pool
           hostPath:

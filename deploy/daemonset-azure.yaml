@@ -123,3 +123,4 @@ spec:
         - name: bootstrap-params
           configMap:
             name: caa-csi-bootstrap-params
+            optional: true
