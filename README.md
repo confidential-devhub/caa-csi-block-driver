@@ -109,6 +109,7 @@ kubectl create secret generic caa-csi-aws-creds \
   --from-literal=AWS_SECRET_ACCESS_KEY=<your-secret>
 
 # Optional: deploy bootstrap ConfigMap for empty-store recovery
+# Edit bootstrap-params-aws.yaml with your region and availability zone first
 kubectl apply -f deploy/bootstrap-params-aws.yaml
 
 kubectl apply -f deploy/rbac.yaml
