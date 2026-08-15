@@ -83,6 +83,7 @@ jobs:
 
           KATA_DIRECT_VOLUME_ROOT_PATH=/tmp/csi-test/kata-vols \
           CSI_VOLUME_STORE_DIR=/tmp/csi-test/volstore \
+          CSI_ALLOW_HOST_STATS_FALLBACK=1 \
           ./csi-driver \
             --endpoint=unix:///tmp/csi-test/csi.sock \
             --drivername=caa-csi-block.csi.confidentialcontainers.io \
@@ -116,5 +117,5 @@ jobs:
             --csi.createmountpathcmd="/tmp/csi-test/create-path.sh" \
             --csi.removemountpathcmd="/tmp/csi-test/remove-path.sh" \
             --csi.checkpathcmd="/tmp/csi-test/check-path.sh" \
-            --ginkgo.skip="Snapshot|ListVolumes|GetCapacity|ControllerPublishVolume|ControllerUnpublishVolume|ExpandVolume|NodeExpandVolume|NodeGetVolumeStats|ModifyVolume|GroupController|volume from an existing source" \
+            --ginkgo.skip="Snapshot|ListVolumes|GetCapacity|ControllerPublishVolume|ControllerUnpublishVolume|ExpandVolume|NodeExpandVolume|ModifyVolume|GroupController|volume from an existing source" \
             --ginkgo.v
