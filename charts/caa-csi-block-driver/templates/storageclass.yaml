@@ -26,10 +26,7 @@ parameters:
   cloudProviderVolumePath: {{ .Values.libvirt.volumeDir | quote }}
   {{- end }}
   {{- if .Values.cdh.enabled }}
-  cdhEncryptionType: {{ .Values.cdh.encryptionType | quote }}
-  cdhSourceType: {{ .Values.cdh.sourceType | quote }}
-  cdhTargetType: {{ .Values.cdh.targetType | quote }}
-  cdhFilesystemType: {{ .Values.cdh.filesystemType | quote }}
-  cdhKey: {{ required "cdh.key must be set when cdh.enabled=true" .Values.cdh.key | quote }}
+  encrypt-type: {{ .Values.cdh.encryptionType | quote }}
+  kbs-key-id: {{ required "cdh.key must be set when cdh.enabled=true" .Values.cdh.key | quote }}
   {{- end }}
 {{- end }}

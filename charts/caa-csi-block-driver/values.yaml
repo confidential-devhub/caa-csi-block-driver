@@ -43,13 +43,12 @@ azure:
 libvirt:
   volumeDir: /var/lib/caa-csi-volumes
 
-# CDH encryption settings (optional, for CDH-based LUKS encryption)
+# CDH encryption settings (optional, for LUKS via CAA).
+# kbs-key-id is the KBS path without the kbs:/// prefix.
+# Example: default/luks-key/volume-key
 cdh:
   enabled: false
   encryptionType: luks2
-  sourceType: empty
-  targetType: fileSystem
-  filesystemType: ext4
   key: ""
 
 storageClass:
