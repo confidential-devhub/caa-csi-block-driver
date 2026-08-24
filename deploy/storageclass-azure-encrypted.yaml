@@ -8,12 +8,9 @@ parameters:
   azureResourceGroup: "<AZURE_RESOURCE_GROUP>"
   azureLocation: eastus
   azureDiskSKU: StandardSSD_LRS
-  # CDH encryption parameters
-  cdhEncryptionType: luks2
-  cdhSourceType: empty
-  cdhTargetType: fileSystem
-  cdhFilesystemType: ext4
-  cdhKey: "kbs:///default/luks-key/volume-key"
+  # LUKS encryption. kbs-key-id is the KBS path, no kbs:/// prefix.
+  encrypt-type: luks2
+  kbs-key-id: default/luks-key/volume-key
 provisioner: caa-csi-block.csi.confidentialcontainers.io
 reclaimPolicy: Delete
 volumeBindingMode: Immediate
