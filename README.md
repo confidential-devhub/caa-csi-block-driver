@@ -118,6 +118,12 @@ kubectl apply -f deploy/daemonset-aws.yaml
 kubectl apply -f deploy/storageclass-aws.yaml
 ```
 
+The default AWS StorageClass sets `awsAvailabilityZone` to match a typical
+CAA `AWS_SUBNET_ID` AZ (edit it). To let the driver take the zone from the
+scheduled node instead, use `deploy/storageclass-aws-topology.yaml` — only
+when the PodVM AZ is the same as the worker AZ. See
+[docs/architecture.md](docs/architecture.md#topology-aware-provisioning).
+
 ### Azure (Managed Disks)
 
 Authentication uses `DefaultAzureCredential`, which supports Workload Identity,

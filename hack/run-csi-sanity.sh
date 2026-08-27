@@ -57,6 +57,7 @@ chmod +x "$TEST_DIR"/*.sh
 
 KATA_DIRECT_VOLUME_ROOT_PATH="$TEST_DIR/kata-vols" \
 CSI_VOLUME_STORE_DIR="$TEST_DIR/volstore" \
+CSI_TOPOLOGY_ZONE=csi-sanity \
 "$BINARY" \
     --endpoint="unix://$TEST_DIR/csi.sock" \
     --drivername=caa-csi-block.csi.confidentialcontainers.io \
