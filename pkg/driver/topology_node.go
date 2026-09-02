@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -85,7 +86,7 @@ func lookupNodeLabelsFromAPI(ctx context.Context, nodeID string) (region, zone s
 	if err != nil {
 		return "", "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+string(token))
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
 
 	resp, err := client.Do(req)
 	if err != nil {

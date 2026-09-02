@@ -41,6 +41,7 @@ func TestApplyTopologyParamsExplicitWins(t *testing.T) {
 		}},
 	}
 	params := cloneParams(map[string]string{
+		"cloudProvider":       "aws",
 		"awsRegion":           "us-east-2",
 		"awsAvailabilityZone": "us-east-2c",
 	})
@@ -58,7 +59,7 @@ func TestApplyTopologyParamsWellKnownKey(t *testing.T) {
 			Segments: map[string]string{k8sZoneLabel: "eu-west-1b"},
 		}},
 	}
-	params := cloneParams(nil)
+	params := cloneParams(map[string]string{"cloudProvider": "aws"})
 	applyTopologyParams(params, req)
 	if params["awsAvailabilityZone"] != "eu-west-1b" {
 		t.Fatalf("expected well-known zone label, got %q", params["awsAvailabilityZone"])
@@ -76,7 +77,7 @@ func TestPreferredWinsOverRequisite(t *testing.T) {
 			Segments: map[string]string{topologyZoneKey: "us-east-2c"},
 		}},
 	}
-	params := cloneParams(nil)
+	params := cloneParams(map[string]string{"cloudProvider": "aws"})
 	applyTopologyParams(params, req)
 	if params["awsAvailabilityZone"] != "us-east-2a" {
 		t.Fatalf("preferred should win, got %q", params["awsAvailabilityZone"])
@@ -91,18 +92,57 @@ func TestApplyTopologyParamsIgnoresDefaultZone(t *testing.T) {
 			Segments: map[string]string{topologyZoneKey: ignoredTopologyZone},
 		}},
 	}
-	params := cloneParams(nil)
+	params := cloneParams(map[string]string{"cloudProvider": "aws"})
 	applyTopologyParams(params, req)
 	if params["awsAvailabilityZone"] != "" {
 		t.Fatalf("sentinel zone must not become awsAvailabilityZone, got %q", params["awsAvailabilityZone"])
 	}
 }
 
+func TestApplyTopologyParamsNilRequirement(t *testing.T) {
+	t.Parallel()
+
+	params := cloneParams(map[string]string{"cloudProvider": "aws"})
+	applyTopologyParams(params, nil)
+	if params["awsAvailabilityZone"] != "" {
+		t.Fatalf("nil requirement should leave AZ empty, got %q", params["awsAvailabilityZone"])
+	}
+}
+
+func TestApplyTopologyParamsSkipsNonAWS(t *testing.T) {
+	t.Parallel()
+
+	req := &csi.TopologyRequirement{
+		Preferred: []*csi.Topology{{
+			Segments: map[string]string{topologyZoneKey: "eastus"},
+		}},
+	}
+
+	for _, provider := range []string{"azure", "libvirt", ""} {
+		t.Run("provider="+provider, func(t *testing.T) {
+			t.Parallel()
+			params := cloneParams(map[string]string{"cloudProvider": provider})
+			applyTopologyParams(params, req)
+			if params["awsAvailabilityZone"] != "" {
+				t.Fatalf("awsAvailabilityZone should not be set, got %q", params["awsAvailabilityZone"])
+			}
+		})
+	}
+}
+
 func TestAccessibleTopology(t *testing.T) {
 	t.Parallel()
 
+	if got := accessibleTopology(nil); got != nil {
+		t.Fatalf("nil params should return nil topology, got %+v", got)
+	}
+
 	if got := accessibleTopology(map[string]string{"cloudProvider": "libvirt"}); got != nil {
-		t.Fatalf("expected nil topology without AZ/region, got %+v", got)
+		t.Fatalf("expected nil topology without AZ, got %+v", got)
+	}
+
+	if got := accessibleTopology(map[string]string{"awsRegion": "us-east-2"}); got != nil {
+		t.Fatalf("region-only should return nil (EBS is AZ-scoped), got %+v", got)
 	}
 
 	got := accessibleTopology(map[string]string{

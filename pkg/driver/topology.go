@@ -32,8 +32,13 @@ func cloneParams(in map[string]string) map[string]string {
 }
 
 // applyTopologyParams fills awsAvailabilityZone from AccessibilityRequirements
-// when the StorageClass did not set it. An explicit param always wins.
+// when the StorageClass did not set it explicitly. Only applies to AWS —
+// other providers don't use awsAvailabilityZone and shouldn't have it
+// injected into their volume records or VolumeContext.
 func applyTopologyParams(params map[string]string, req *csi.TopologyRequirement) {
+	if params["cloudProvider"] != "aws" {
+		return
+	}
 	if params["awsAvailabilityZone"] != "" {
 		return
 	}
@@ -68,17 +73,16 @@ func firstSegment(topos []*csi.Topology, keys []string) string {
 }
 
 func accessibleTopology(params map[string]string) []*csi.Topology {
-	zone := params["awsAvailabilityZone"]
-	region := params["awsRegion"]
-	if zone == "" && region == "" {
+	if params == nil {
 		return nil
 	}
-	segments := make(map[string]string, 2)
-	if region != "" {
-		segments[topologyRegionKey] = region
+	zone := params["awsAvailabilityZone"]
+	if zone == "" {
+		return nil
 	}
-	if zone != "" {
-		segments[topologyZoneKey] = zone
+	segments := map[string]string{topologyZoneKey: zone}
+	if region := params["awsRegion"]; region != "" {
+		segments[topologyRegionKey] = region
 	}
 	return []*csi.Topology{{Segments: segments}}
 }

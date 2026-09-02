@@ -1,4 +1,7 @@
 {{- if .Values.storageClass.create }}
+{{- if and (eq .Values.provider "aws") (not .Values.aws.availabilityZone) (ne .Values.storageClass.volumeBindingMode "WaitForFirstConsumer") }}
+{{- fail "When provider=aws and aws.availabilityZone is not set, storageClass.volumeBindingMode must be WaitForFirstConsumer (so the AZ is inferred from the scheduled node's topology)" }}
+{{- end }}
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
