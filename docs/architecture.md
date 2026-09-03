@@ -127,10 +127,38 @@ kubectl apply -f deploy/daemonset-azure.yaml
 Helm installs the same ConfigMap automatically from `values.yaml`
 (`aws.*` / `azure.*` / `libvirt.*`).
 
-For AWS, `awsRegion` (or `AWS_REGION`) is enough for list/delete/recovery;
-`awsAvailabilityZone` is only required when creating new volumes.
+For AWS, `awsRegion` (or `AWS_REGION`) is enough for list/delete/recovery.
+`awsAvailabilityZone` is required to create volumes unless the CSI provisioner
+passes a zone via topology (`WaitForFirstConsumer`). See
+[Topology-aware provisioning](#topology-aware-provisioning).
 
+## Topology-aware provisioning
 
+EBS can only attach to a VM in the same Availability Zone. For Peer Pods that
+VM is the **PodVM**, not the Kubernetes worker.
+
+CAA on AWS typically sets `AWS_SUBNET_ID` (one subnet = one AZ). Disks must be
+created in that AZ. The default StorageClass keeps `awsAvailabilityZone` for
+this case.
+
+When `awsAvailabilityZone` is omitted, `CreateVolume` uses the zone from
+`CreateVolumeRequest.accessibility_requirements` (`topology.caa-csi.io/zone`,
+then `topology.kubernetes.io/zone`). That is safe when the PodVM AZ is the
+worker AZ: a single-AZ cluster, or CAA with `AWS_SUBNET_ID` unset (IMDS uses
+the worker's subnet). Use `deploy/storageclass-aws-topology.yaml`
+(`volumeBindingMode: WaitForFirstConsumer`) for that mode. The
+`csi-provisioner` sidecar must be started with `--feature-gates=Topology=true`
+(off by default in v3.6; on by default since v5).
+
+`NodeGetInfo` advertises the worker zone from `CSI_TOPOLOGY_ZONE` /
+`CSI_TOPOLOGY_REGION` if set, otherwise from the node's
+`topology.kubernetes.io/zone` and `topology.kubernetes.io/region` labels.
+If neither is available it returns `Unavailable` so kubelet retries; it
+does not advertise a fake zone. `csi-sanity` sets `CSI_TOPOLOGY_ZONE`
+because those tests run without a cluster.
+
+An explicit `awsAvailabilityZone` StorageClass parameter always wins over
+topology. Azure does not use this AZ topology path.
 
 ## Pre-Creation Validation (Azure)
 
@@ -199,5 +227,5 @@ Snapshot lifecycle is supported via the `VolumeSnapshotter` interface:
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| `disk is in region X but PodVM targets region Y` | Disk created in different region than node | Align StorageClass AZ/region with the node; topology-aware provisioning tracked in #34 |
+| `InvalidVolume.ZoneMismatch` / disk AZ ≠ PodVM AZ | EBS created in a different AZ than CAA's subnet | Set StorageClass `awsAvailabilityZone` to the CAA `AWS_SUBNET_ID` AZ. Do not use worker-node topology when the PodVM subnet is in another AZ. |
 | `ConflictingUserInput` on Azure VM create | Disk still attached to stale VM | Orphan detach logic handles this automatically; if it persists, manually delete stale VM |
