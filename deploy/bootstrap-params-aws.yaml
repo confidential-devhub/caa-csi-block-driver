@@ -7,6 +7,7 @@ metadata:
     app: caa-csi-block
 data:
   # Same keys as the AWS StorageClass — used for empty-store recovery / delete fallback.
+  # awsAvailabilityZone is optional here (not needed for list/delete).
   bootstrap-params.json: |
     {
       "cloudProvider": "aws",

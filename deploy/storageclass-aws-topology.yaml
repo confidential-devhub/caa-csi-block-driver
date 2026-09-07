@@ -1,0 +1,16 @@
+# Optional AWS StorageClass for topology-aware provisioning.
+# Use this only when the PodVM AZ matches the worker node AZ (single-AZ cluster,
+# or CAA with AWS_SUBNET_ID unset so it uses the worker's subnet from IMDS).
+# If CAA uses a fixed subnet in another AZ, keep awsAvailabilityZone on
+# storageclass-aws.yaml instead — otherwise AttachVolume fails with ZoneMismatch.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: caa-block-aws-topology
+parameters:
+  cloudProvider: aws
+  awsRegion: us-east-2
+  awsVolumeType: gp3
+provisioner: caa-csi-block.csi.confidentialcontainers.io
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer

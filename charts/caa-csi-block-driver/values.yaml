@@ -23,6 +23,9 @@ csiDriver:
 # AWS provider settings
 aws:
   region: ""
+  # Optional. Pin EBS to this AZ. Recommended when CAA uses a single AWS_SUBNET_ID
+  # (disk AZ must match the PodVM subnet). Omit only with WaitForFirstConsumer when
+  # the PodVM AZ is the same as the worker node AZ.
   availabilityZone: ""
   volumeType: gp3
   irsa:

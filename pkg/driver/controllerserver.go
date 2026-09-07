@@ -95,7 +95,8 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported volume capability: %v", err)
 	}
 
-	params := req.GetParameters()
+	params := cloneParams(req.GetParameters())
+	applyTopologyParams(params, req.GetAccessibilityRequirements())
 
 	if et := params["encrypt-type"]; et != "" {
 		if params["kbs-key-id"] == "" {
@@ -121,9 +122,10 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		}
 		return &csi.CreateVolumeResponse{
 			Volume: &csi.Volume{
-				VolumeId:      req.GetName(),
-				CapacityBytes: rec.CapacityBytes,
-				VolumeContext: volumeCtx,
+				VolumeId:           req.GetName(),
+				CapacityBytes:      rec.CapacityBytes,
+				VolumeContext:      volumeCtx,
+				AccessibleTopology: accessibleTopology(rec.Params),
 			},
 		}, nil
 	}
@@ -202,9 +204,10 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 
 	vol := &csi.Volume{
-		VolumeId:      req.GetName(),
-		CapacityBytes: capacity,
-		VolumeContext: volumeCtx,
+		VolumeId:           req.GetName(),
+		CapacityBytes:      capacity,
+		VolumeContext:      volumeCtx,
+		AccessibleTopology: accessibleTopology(params),
 	}
 
 	if src := req.GetVolumeContentSource(); src != nil {

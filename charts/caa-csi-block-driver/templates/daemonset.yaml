@@ -23,6 +23,7 @@ spec:
             - "-v=3"
             - "--csi-address=/csi/csi.sock"
             - "--worker-threads=5"
+            - "--feature-gates=Topology=true"
           env:
             - name: NODE_NAME
               valueFrom:

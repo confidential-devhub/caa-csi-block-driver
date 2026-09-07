@@ -60,6 +60,7 @@ type nodeServer struct {
 	nodeID  string
 	mu      sync.Mutex
 	devices map[string]string // volumeID → device path or cloud volume ID
+	topo    *csi.Topology
 }
 
 func newNodeServer(nodeID string) *nodeServer {
@@ -415,24 +416,28 @@ func (ns *nodeServer) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapab
 	}, nil
 }
 
-func (ns *nodeServer) NodeGetInfo(_ context.Context, _ *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
-	resp := &csi.NodeGetInfoResponse{
-		NodeId: ns.nodeID,
+func (ns *nodeServer) NodeGetInfo(ctx context.Context, _ *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
+	ns.mu.Lock()
+	topo := ns.topo
+	ns.mu.Unlock()
+
+	if topo == nil {
+		topo = resolveNodeTopology(ctx, ns.nodeID)
+		if topo == nil {
+			return nil, status.Error(codes.Unavailable, "node topology not yet available")
+		}
+		ns.mu.Lock()
+		if ns.topo == nil {
+			ns.topo = topo
+			nsLogger.Printf("NodeGetInfo: advertising topology segments: %v", topo.Segments)
+		} else {
+			topo = ns.topo
+		}
+		ns.mu.Unlock()
 	}
 
-	region := os.Getenv("CSI_TOPOLOGY_REGION")
-	zone := os.Getenv("CSI_TOPOLOGY_ZONE")
-	if region != "" || zone != "" {
-		segments := make(map[string]string)
-		if region != "" {
-			segments["topology.caa-csi.io/region"] = region
-		}
-		if zone != "" {
-			segments["topology.caa-csi.io/zone"] = zone
-		}
-		resp.AccessibleTopology = &csi.Topology{Segments: segments}
-		nsLogger.Printf("NodeGetInfo: advertising topology segments: %v", segments)
-	}
-
-	return resp, nil
+	return &csi.NodeGetInfoResponse{
+		NodeId:             ns.nodeID,
+		AccessibleTopology: topo,
+	}, nil
 }

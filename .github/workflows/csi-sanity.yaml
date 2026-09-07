@@ -84,6 +84,7 @@ jobs:
           KATA_DIRECT_VOLUME_ROOT_PATH=/tmp/csi-test/kata-vols \
           CSI_VOLUME_STORE_DIR=/tmp/csi-test/volstore \
           CSI_ALLOW_HOST_STATS_FALLBACK=1 \
+          CSI_TOPOLOGY_ZONE=csi-sanity \
           ./csi-driver \
             --endpoint=unix:///tmp/csi-test/csi.sock \
             --drivername=caa-csi-block.csi.confidentialcontainers.io \

@@ -23,6 +23,8 @@ spec:
             - "-v=3"
             - "--csi-address=/csi/csi.sock"
             - "--worker-threads=5"
+            # v3.6 has Topology off by default; required for WaitForFirstConsumer.
+            - "--feature-gates=Topology=true"
           env:
             - name: NODE_NAME
               valueFrom:
