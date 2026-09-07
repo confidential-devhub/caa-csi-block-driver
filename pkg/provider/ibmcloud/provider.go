@@ -37,8 +37,13 @@ type Config struct {
 	Region        string
 	Zone          string
 	ResourceGroup string
-	Profile       string // e.g., "general-purpose", "5iops-tier", "10iops-tier", "custom"
-	Iops          string // Custom profile IOPS
+	Profile       string   // e.g., "general-purpose", "5iops-tier", "10iops-tier", "custom"
+	Iops          string   // Custom profile IOPS
+	Encrypted     string   // "true" or "false"
+	EncryptionKey string   // Key CRN
+	BillingType   string   // e.g., "hourly"
+	ExtraTags     []string // User-supplied extra tags
+	FsType        string   // e.g., "ext4"
 }
 
 // IBMCloudProvider manages VPC block volumes using the official community ibmcloud-volume-vpc SDK.
@@ -49,36 +54,62 @@ type IBMCloudProvider struct {
 
 // NewIBMCloudProvider parses StorageClass parameters and initializes the VPC SDK Storage Provider.
 func NewIBMCloudProvider(params map[string]string) (*IBMCloudProvider, error) {
-	region := params["ibmRegion"]
+	// Support both community keys (e.g. "region", "zone", "profile") and ibm-prefixed keys
+	region := params["region"]
 	if region == "" {
-		region = params["region"] // fallback
+		region = params["ibmRegion"]
 	}
 	if region == "" {
-		return nil, fmt.Errorf("ibmRegion is required for ibmcloud provider")
+		return nil, fmt.Errorf("region (or ibmRegion) is required for ibmcloud provider")
 	}
 
-	zone := params["ibmZone"]
+	zone := params["zone"]
 	if zone == "" {
-		zone = params["zone"] // fallback
+		zone = params["ibmZone"]
 	}
 	if zone == "" {
-		return nil, fmt.Errorf("ibmZone is required for ibmcloud provider")
+		return nil, fmt.Errorf("zone (or ibmZone) is required for ibmcloud provider")
 	}
 
-	profile := params["ibmProfile"]
+	profile := params["profile"]
 	if profile == "" {
-		profile = params["profile"] // fallback
+		profile = params["ibmProfile"]
 	}
 	if profile == "" {
 		profile = "general-purpose" // default profile
 	}
 
+	resourceGroup := params["resourceGroup"]
+	if resourceGroup == "" {
+		resourceGroup = params["ibmResourceGroup"]
+	}
+
+	iops := params["iops"]
+	if iops == "" {
+		iops = params["ibmIops"]
+	}
+
+	var extraTags []string
+	if tagsStr := params["tags"]; tagsStr != "" {
+		for _, tag := range strings.Split(tagsStr, ",") {
+			trimmed := strings.TrimSpace(tag)
+			if trimmed != "" {
+				extraTags = append(extraTags, trimmed)
+			}
+		}
+	}
+
 	cfg := Config{
 		Region:        region,
 		Zone:          zone,
-		ResourceGroup: params["ibmResourceGroup"],
+		ResourceGroup: resourceGroup,
 		Profile:       profile,
-		Iops:          params["ibmIops"],
+		Iops:          iops,
+		Encrypted:     params["encrypted"],
+		EncryptionKey: params["encryptionKey"],
+		BillingType:   params["billingType"],
+		ExtraTags:     extraTags,
+		FsType:        params["csi.storage.k8s.io/fstype"],
 	}
 
 	// Instantiate a production Zap logger for the SDK
@@ -131,20 +162,28 @@ func (p *IBMCloudProvider) CreateVolume(volumeID string, sizeBytes int64) (*caaP
 	logger.Printf("Creating IBM VPC Volume %s (%d GB, profile=%s, zone=%s)", 
 		volumeID, sizeGB, p.config.Profile, p.config.Zone)
 
+	// Combine volume tagging
+	tags := []string{"caa-csi-volume-id:" + volumeID}
+	tags = append(tags, p.config.ExtraTags...)
+
 	// Create volume request payload using community structures
 	volRequest := provider.Volume{
-		Name:     &volumeID,
-		Capacity: &sizeGB,
-		Az:       p.config.Zone,
-		Region:   p.config.Region,
+		Name:        &volumeID,
+		Capacity:    &sizeGB,
+		Az:          p.config.Zone,
+		Region:      p.config.Region,
+		BillingType: p.config.BillingType,
 		VPCVolume: provider.VPCVolume{
 			Profile: &provider.Profile{
 				Name: p.config.Profile,
 			},
-			Tags: []string{
-				"caa-csi-volume-id:" + volumeID,
-			},
+			Tags: tags,
 		},
+	}
+
+	// Setup custom FS type if specified
+	if p.config.FsType != "" {
+		volRequest.VolumeType = provider.VolumeType(p.config.FsType)
 	}
 
 	// Setup Custom Resource Group if specified
@@ -157,6 +196,13 @@ func (p *IBMCloudProvider) CreateVolume(volumeID string, sizeBytes int64) (*caaP
 	// Setup custom IOPS if specified and profile is custom
 	if p.config.Iops != "" && p.config.Profile == "custom" {
 		volRequest.Iops = &p.config.Iops
+	}
+
+	// Setup customer managed encryption key if specified
+	if strings.ToLower(p.config.Encrypted) == "true" && p.config.EncryptionKey != "" {
+		volRequest.VPCVolume.VolumeEncryptionKey = &provider.VolumeEncryptionKey{
+			CRN: p.config.EncryptionKey,
+		}
 	}
 
 	volResponse, err := p.session.CreateVolume(volRequest)
