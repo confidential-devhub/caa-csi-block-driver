@@ -64,9 +64,71 @@ type nodeServer struct {
 }
 
 func newNodeServer(nodeID string) *nodeServer {
-	return &nodeServer{
+	ns := &nodeServer{
 		nodeID:  nodeID,
 		devices: make(map[string]string),
+	}
+	cleanStaleMountInfoDirs(getKataDirectVolumeRootPath())
+	return ns
+}
+
+// cleanStaleMountInfoDirs removes leftover mountInfo.json directories that
+// survived a node restart (i.e. NodeUnpublishVolume never ran). Each dir
+// name is base64(targetPath); if the targetPath no longer exists on disk
+// the dir is stale and safe to remove. Corrupt mountInfo.json files are
+// also cleaned up.
+func cleanStaleMountInfoDirs(rootDir string) {
+	entries, err := os.ReadDir(rootDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		decodedBytes, err := b64.URLEncoding.DecodeString(entry.Name())
+		if err != nil {
+			continue
+		}
+		targetPath := string(decodedBytes)
+
+		dirPath := filepath.Join(rootDir, entry.Name())
+		infoPath := filepath.Join(dirPath, mountInfoFileName)
+
+		data, err := os.ReadFile(infoPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			nsLogger.Printf("startup cleanup: removing unreadable mountInfo dir %s: %v", entry.Name(), err)
+			if err := os.RemoveAll(dirPath); err != nil {
+				nsLogger.Printf("startup cleanup: failed to remove %s: %v", dirPath, err)
+			}
+			continue
+		}
+
+		var info mountInfoJSON
+		if err := json.Unmarshal(data, &info); err != nil { // validates structure, not just syntax
+			nsLogger.Printf("startup cleanup: removing corrupt mountInfo dir %s: %v", entry.Name(), err)
+			if err := os.RemoveAll(dirPath); err != nil {
+				nsLogger.Printf("startup cleanup: failed to remove %s: %v", dirPath, err)
+			}
+			continue
+		}
+
+		if _, err := os.Stat(targetPath); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			nsLogger.Printf("startup cleanup: skipping %s, cannot stat target: %v", targetPath, err)
+			continue
+		}
+
+		nsLogger.Printf("startup cleanup: removing stale mountInfo dir for %s (target path gone)", targetPath)
+		if err := os.RemoveAll(dirPath); err != nil {
+			nsLogger.Printf("startup cleanup: failed to remove %s: %v", dirPath, err)
+		}
 	}
 }
 
