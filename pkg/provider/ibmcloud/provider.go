@@ -291,10 +291,11 @@ func (p *IBMCloudProvider) CreateVolume(ctx context.Context, volumeID string, si
 
 	// Create volume request payload using community structures
 	volRequest := provider.Volume{
-		Name:     &volumeID,
-		Capacity: &sizeGB,
-		Az:       p.config.Zone,
-		Region:   p.config.Region,
+		Name:        &volumeID,
+		Capacity:    &sizeGB,
+		Az:          p.config.Zone,
+		Region:      p.config.Region,
+		BillingType: p.config.BillingType,
 		VPCVolume: provider.VPCVolume{
 			Bandwidth: p.config.Throughput,
 			Profile: &provider.Profile{
