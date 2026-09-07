@@ -1,0 +1,19 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: caa-csi-ibmcloud
+provisioner: caa-csi-block.csi.confidentialcontainers.io
+parameters:
+  cloudProvider: "ibmcloud"
+  profile: "general-purpose"               # The VPC Storage profile used
+  sizeRange: "[10-2000]GiB"                 # The size range in GiB that is supported
+  csi.storage.k8s.io/fstype: "ext4"         # ext4 is the default filesytem used
+  billingType: "hourly"                     # The default billing policy used
+  encrypted: "false"                        # Set to "true" for Key Protect volume encryption
+  encryptionKey: ""                         # CRN of Key Protect key if encrypted is "true"
+  resourceGroup: ""                         # Optional Resource Group ID
+  region: "us-south"                        # Target Region
+  zone: "us-south-1"                        # Target Zone
+  tags: "confidential-containers,caa-csi"   # Extra tags separated by commas
+reclaimPolicy: "Delete"
+volumeBindingMode: Immediate

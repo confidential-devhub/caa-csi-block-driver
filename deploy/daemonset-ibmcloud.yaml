@@ -1,0 +1,130 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: caa-csi-block-plugin
+  namespace: caa-csi-block
+  labels:
+    app: caa-csi-block
+spec:
+  selector:
+    matchLabels:
+      app: caa-csi-block
+  template:
+    metadata:
+      labels:
+        app: caa-csi-block
+    spec:
+      serviceAccountName: caa-csi-provisioner
+      containers:
+        # Sidecar: csi-provisioner (handles CreateVolume/DeleteVolume RPCs from Kubernetes)
+        - name: csi-provisioner
+          image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.0
+          args:
+            - "-v=3"
+            - "--csi-address=/csi/csi.sock"
+            - "--worker-threads=5"
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+
+        # Sidecar: node-driver-registrar (registers CSI driver with kubelet)
+        - name: node-driver-registrar
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.9.0
+          args:
+            - "--v=3"
+            - "--csi-address=/csi/csi.sock"
+            - "--kubelet-registration-path=/var/lib/kubelet/plugins/caa-csi-block/csi.sock"
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+            - mountPath: /registration
+              name: registration-dir
+
+        # Main: caa-csi-block-driver (compiled with the ibmcloud provider)
+        - name: caa-csi-block-driver
+          image: localhost/caa-csi-block-driver:v0.2.0
+          args:
+            - "--drivername=caa-csi-block.csi.confidentialcontainers.io"
+            - "--endpoint=unix:///csi/csi.sock"
+            - "--nodeid=$(KUBE_NODE_NAME)"
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # Path to storage-secret-store mount (required by secret-utils-lib / ibmcloud-volume-vpc SDK)
+            - name: SECRET_CONFIG_PATH
+              value: "/etc/storage_ibmc"
+            # Empty-store recovery / delete fallback configuration
+            - name: CSI_CLOUD_PROVIDER
+              value: "ibmcloud"
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+            - mountPath: /var/lib/kubelet/pods
+              name: mountpoint-dir
+              mountPropagation: Bidirectional
+            - mountPath: /var/lib/kubelet/plugins
+              name: plugins-dir
+              mountPropagation: Bidirectional
+            - mountPath: /run/kata-containers/shared/direct-volumes
+              name: shared-directvols
+            - mountPath: /var/lib/caa-csi-block
+              name: csi-data
+            - mountPath: /etc/storage_ibmc
+              name: customer-auth
+              readOnly: true
+
+      volumes:
+        - name: socket-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/caa-csi-block
+            type: DirectoryOrCreate
+        - name: mountpoint-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: DirectoryOrCreate
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: Directory
+        - name: plugins-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins
+            type: Directory
+        - name: shared-directvols
+          hostPath:
+            path: /run/kata-containers/shared/direct-volumes/
+            type: DirectoryOrCreate
+        - name: csi-data
+          hostPath:
+            path: /var/lib/caa-csi-block
+            type: DirectoryOrCreate
+        - name: customer-auth
+          secret:
+            secretName: storage-secret-store
+            optional: true

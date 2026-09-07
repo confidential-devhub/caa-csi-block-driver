@@ -59,16 +59,10 @@ func NewIBMCloudProvider(params map[string]string) (*IBMCloudProvider, error) {
 	if region == "" {
 		region = params["ibmRegion"]
 	}
-	if region == "" {
-		return nil, fmt.Errorf("region (or ibmRegion) is required for ibmcloud provider")
-	}
 
 	zone := params["zone"]
 	if zone == "" {
 		zone = params["ibmZone"]
-	}
-	if zone == "" {
-		return nil, fmt.Errorf("zone (or ibmZone) is required for ibmcloud provider")
 	}
 
 	profile := params["profile"]
@@ -145,6 +139,10 @@ func NewIBMCloudProvider(params map[string]string) (*IBMCloudProvider, error) {
 
 // CreateVolume provisions a new VPC Block Volume using the ibmcloud-volume-vpc SDK.
 func (p *IBMCloudProvider) CreateVolume(volumeID string, sizeBytes int64) (*caaProvider.VolumeInfo, error) {
+	if p.config.Zone == "" {
+		return nil, fmt.Errorf("zone (or ibmZone) parameter is required to create a new volume")
+	}
+
 	exists, err := p.VolumeExists(volumeID)
 	if err != nil {
 		return nil, err
