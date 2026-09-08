@@ -135,6 +135,49 @@ func parseConfig(params map[string]string) (Config, error) {
 	if cfg.Region == "" || cfg.Zone == "" {
 		return Config{}, fmt.Errorf("region and zone must be explicitly configured")
 	}
+	if cfg.Region == "" || cfg.Zone == "" || cfg.ResourceGroup == "" {
+		return Config{}, fmt.Errorf("region, zone and resourceGroup must be explicitly configured")
+	}
+	if !strings.HasPrefix(cfg.Zone, cfg.Region+"-") {
+		return Config{}, fmt.Errorf("zone %q is not in region %q", cfg.Zone, cfg.Region)
+	}
+	switch cfg.Profile {
+	case "general-purpose", "5iops-tier", "10iops-tier", "custom":
+	default:
+		return Config{}, fmt.Errorf("unsupported profile %q for this provisioning implementation", cfg.Profile)
+	}
+	if cfg.Profile == "custom" {
+		iops, err := strconv.Atoi(cfg.Iops)
+		if err != nil || iops <= 0 {
+			return Config{}, fmt.Errorf("custom profile requires positive iops")
+		}
+		cfg.Iops = strconv.Itoa(iops)
+	} else if cfg.Iops != "" {
+		return Config{}, fmt.Errorf("iops is only supported with the custom profile")
+	}
+	if cfg.BillingType == "" {
+		cfg.BillingType = "hourly"
+	}
+	if cfg.FsType == "" {
+		cfg.FsType = "ext4"
+	}
+	if cfg.Encrypted == "" {
+		cfg.Encrypted = "false"
+	}
+	cfg.Encrypted = strings.ToLower(cfg.Encrypted)
+	if cfg.Encrypted != "true" && cfg.Encrypted != "false" {
+		return Config{}, fmt.Errorf("encrypted must be true or false")
+	}
+	if (cfg.Encrypted == "true") != (cfg.EncryptionKey != "") {
+		return Config{}, fmt.Errorf("encrypted=true requires encryptionKey; omit the key when encrypted=false")
+	}
+	for _, tag := range cfg.ExtraTags {
+		if strings.HasPrefix(tag, ownershipTagPrefix) || strings.HasPrefix(tag, configTagPrefix) {
+			return Config{}, fmt.Errorf("tag prefix %q is reserved for driver ownership", ownershipTagPrefix)
+		}
+	}
+	return cfg, nil
+}
 
 	validProfiles := map[string]bool{
 		"general-purpose": true,
