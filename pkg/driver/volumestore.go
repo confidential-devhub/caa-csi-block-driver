@@ -35,6 +35,7 @@ type volumeRecord struct {
 	Path          string            `json:"path"`
 	CapacityBytes int64             `json:"capacityBytes,omitempty"`
 	Params        map[string]string `json:"params"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
 }
 
 // volumeManifest is a lightweight params backup used when individual volume
@@ -122,7 +123,7 @@ func (vs *volumeStore) RecoverFromCloud(params map[string]string) error {
 
 	recovered := 0
 	for _, vol := range vols {
-		if vol.VolumeID == "" {
+		if !validVolumeID(vol.VolumeID) {
 			continue
 		}
 		path := filepath.Join(vs.dir, vol.VolumeID+".json")
@@ -139,13 +140,14 @@ func (vs *volumeStore) RecoverFromCloud(params map[string]string) error {
 			Path:          vol.Path,
 			CapacityBytes: vol.SizeBytes,
 			Params:        paramsCopy,
+			Metadata:      vol.Metadata,
 		}
 		data, err := json.Marshal(rec)
 		if err != nil {
 			vsLogger.Printf("failed to marshal recovered volume %s: %v", vol.VolumeID, err)
 			continue
 		}
-		if err := os.WriteFile(path, data, 0600); err != nil {
+		if err := atomicWriteFile(path, data); err != nil {
 			vsLogger.Printf("failed to write recovered volume %s: %v", vol.VolumeID, err)
 			continue
 		}
@@ -180,6 +182,9 @@ func (vs *volumeStore) Exists(volumeID string) (bool, error) {
 }
 
 func (vs *volumeStore) Save(rec *volumeRecord) error {
+	if rec == nil || !validVolumeID(rec.VolumeID) {
+		return fmt.Errorf("invalid volume record ID")
+	}
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -187,13 +192,16 @@ func (vs *volumeStore) Save(rec *volumeRecord) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal volume record: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(vs.dir, rec.VolumeID+".json"), data, 0600); err != nil {
+	if err := atomicWriteFile(filepath.Join(vs.dir, rec.VolumeID+".json"), data); err != nil {
 		return err
 	}
 	return vs.writeManifestLocked()
 }
 
 func (vs *volumeStore) Load(volumeID string) (*volumeRecord, error) {
+	if !validVolumeID(volumeID) {
+		return nil, fmt.Errorf("invalid volume record ID")
+	}
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -205,7 +213,36 @@ func (vs *volumeStore) Load(volumeID string) (*volumeRecord, error) {
 	if err := json.Unmarshal(data, &rec); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal volume record: %w", err)
 	}
+	if rec.VolumeID != volumeID {
+		return nil, fmt.Errorf("volume record ID mismatch")
+	}
 	return &rec, nil
+}
+
+func validVolumeID(id string) bool {
+	return id != "" && id != "." && id != ".." && id != "_manifest" && filepath.Base(id) == id
+}
+
+// Rename only a fully written record, so interrupted writes cannot leave a
+// truncated JSON file that a retry might mistake for a missing cloud volume.
+func atomicWriteFile(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".caa-record-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 func (vs *volumeStore) Delete(volumeID string) {
@@ -290,7 +327,7 @@ func (vs *volumeStore) writeManifestLocked() error {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(path, data, 0600)
+		return atomicWriteFile(path, data)
 	}
 
 	var params map[string]string
@@ -322,7 +359,7 @@ func (vs *volumeStore) writeManifestLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	return atomicWriteFile(path, data)
 }
 
 func (vs *volumeStore) readManifestLocked() (*volumeManifest, error) {

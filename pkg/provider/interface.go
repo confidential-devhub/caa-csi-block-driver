@@ -3,7 +3,22 @@
 
 package provider
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+var (
+	ErrInvalidParameters   = errors.New("invalid provider parameters")
+	ErrVolumeNotFound      = errors.New("volume not found")
+	ErrVolumeAlreadyExists = errors.New("volume exists with incompatible properties")
+)
+
+// CapacityNormalizer allows the controller to check the allocated size against
+// the CSI capacity limit before issuing a cloud create request.
+type CapacityNormalizer interface {
+	NormalizeCapacity(sizeBytes int64) (int64, error)
+}
 
 // VolumeInfo holds provider-agnostic metadata about a block volume.
 type VolumeInfo struct {
