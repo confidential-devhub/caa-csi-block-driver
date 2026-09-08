@@ -4,6 +4,7 @@
 package libvirt
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -53,7 +54,7 @@ func (p *LibvirtProvider) volumePath(volumeID string) string {
 	return filepath.Join(p.config.PoolPath, fmt.Sprintf("csi-vol-%s.raw", volumeID))
 }
 
-func (p *LibvirtProvider) CreateVolume(volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+func (p *LibvirtProvider) CreateVolume(_ context.Context, volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	volPath := p.volumePath(volumeID)
 
 	if _, err := os.Stat(volPath); os.IsNotExist(err) {
@@ -92,7 +93,7 @@ func (p *LibvirtProvider) CreateVolume(volumeID string, sizeBytes int64) (*provi
 	}, nil
 }
 
-func (p *LibvirtProvider) DeleteVolume(volumeID string) error {
+func (p *LibvirtProvider) DeleteVolume(_ context.Context, volumeID string) error {
 	volPath := p.volumePath(volumeID)
 
 	if err := os.Remove(volPath); err != nil && !os.IsNotExist(err) {
@@ -103,7 +104,7 @@ func (p *LibvirtProvider) DeleteVolume(volumeID string) error {
 	return nil
 }
 
-func (p *LibvirtProvider) GetVolumeInfo(volumeID string) (*provider.VolumeInfo, error) {
+func (p *LibvirtProvider) GetVolumeInfo(_ context.Context, volumeID string) (*provider.VolumeInfo, error) {
 	volPath := p.volumePath(volumeID)
 
 	info, err := os.Stat(volPath)
@@ -126,7 +127,7 @@ func (p *LibvirtProvider) GetVolumeInfo(volumeID string) (*provider.VolumeInfo, 
 	}, nil
 }
 
-func (p *LibvirtProvider) VolumeExists(volumeID string) (bool, error) {
+func (p *LibvirtProvider) VolumeExists(_ context.Context, volumeID string) (bool, error) {
 	volPath := p.volumePath(volumeID)
 	_, err := os.Stat(volPath)
 	if err == nil {
@@ -138,7 +139,7 @@ func (p *LibvirtProvider) VolumeExists(volumeID string) (bool, error) {
 	return false, fmt.Errorf("failed to check volume %s: %w", volPath, err)
 }
 
-func (p *LibvirtProvider) CreateVolumeFromSnapshot(_, snapshotID string, _ int64) (*provider.VolumeInfo, error) {
+func (p *LibvirtProvider) CreateVolumeFromSnapshot(_ context.Context, _, snapshotID string, _ int64) (*provider.VolumeInfo, error) {
 	return nil, fmt.Errorf("libvirt provider does not support snapshots (snapshot %s)", snapshotID)
 }
 
@@ -147,7 +148,7 @@ func (p *LibvirtProvider) CreateVolumeFromSnapshot(_, snapshotID string, _ int64
 // which is NOT atomic — cloning a source that is actively being written may
 // produce a crash-inconsistent image. Callers should ensure the source PVC is
 // not mounted read-write during the clone operation.
-func (p *LibvirtProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+func (p *LibvirtProvider) CreateVolumeFromVolume(ctx context.Context, volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	srcPath := p.volumePath(sourceVolumeID)
 	if _, err := os.Stat(srcPath); err != nil {
 		if os.IsNotExist(err) {
@@ -159,7 +160,7 @@ func (p *LibvirtProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string
 	dstPath := p.volumePath(volumeID)
 	if _, err := os.Stat(dstPath); err == nil {
 		logger.Printf("Volume %s already exists at %s, reusing", volumeID, dstPath)
-		return p.GetVolumeInfo(volumeID)
+		return p.GetVolumeInfo(ctx, volumeID)
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("failed to check destination volume %s: %w", dstPath, err)
 	}

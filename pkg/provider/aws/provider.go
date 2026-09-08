@@ -138,20 +138,19 @@ func newEC2Client(cfg Config) (*ec2.Client, error) {
 	return ec2.NewFromConfig(awsCfg), nil
 }
 
-func (p *AWSProvider) CreateVolume(volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
-	ctx := context.TODO()
+func (p *AWSProvider) CreateVolume(ctx context.Context, volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 
 	if p.config.AvailabilityZone == "" {
 		return nil, fmt.Errorf("awsAvailabilityZone is required to create volumes")
 	}
 
-	exists, err := p.VolumeExists(volumeID)
+	exists, err := p.VolumeExists(ctx, volumeID)
 	if err != nil {
 		return nil, err
 	}
 	if exists {
 		logger.Printf("Volume %s already exists, reusing", volumeID)
-		return p.GetVolumeInfo(volumeID)
+		return p.GetVolumeInfo(ctx, volumeID)
 	}
 
 	sizeGiB := int32(sizeBytes / (1024 * 1024 * 1024))
@@ -214,10 +213,8 @@ func (p *AWSProvider) CreateVolume(volumeID string, sizeBytes int64) (*provider.
 	}, nil
 }
 
-func (p *AWSProvider) DeleteVolume(volumeID string) error {
-	ctx := context.TODO()
-
-	ebsVolumeID, err := p.findEBSVolumeID(volumeID)
+func (p *AWSProvider) DeleteVolume(ctx context.Context, volumeID string) error {
+	ebsVolumeID, err := p.findEBSVolumeID(ctx, volumeID)
 	if err != nil {
 		logger.Printf("Volume %s not found, nothing to delete", volumeID)
 		return nil
@@ -236,10 +233,8 @@ func (p *AWSProvider) DeleteVolume(volumeID string) error {
 	return nil
 }
 
-func (p *AWSProvider) GetVolumeInfo(volumeID string) (*provider.VolumeInfo, error) {
-	ctx := context.TODO()
-
-	ebsVolumeID, err := p.findEBSVolumeID(volumeID)
+func (p *AWSProvider) GetVolumeInfo(ctx context.Context, volumeID string) (*provider.VolumeInfo, error) {
+	ebsVolumeID, err := p.findEBSVolumeID(ctx, volumeID)
 	if err != nil {
 		return nil, err
 	}
@@ -270,8 +265,7 @@ func (p *AWSProvider) GetVolumeInfo(volumeID string) (*provider.VolumeInfo, erro
 	}, nil
 }
 
-func (p *AWSProvider) VolumeExists(volumeID string) (bool, error) {
-	ctx := context.TODO()
+func (p *AWSProvider) VolumeExists(ctx context.Context, volumeID string) (bool, error) {
 	result, err := p.ec2Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
 		Filters: []ec2types.Filter{
 			{
@@ -287,8 +281,7 @@ func (p *AWSProvider) VolumeExists(volumeID string) (bool, error) {
 }
 
 // findEBSVolumeID looks up the EBS volume ID by our custom tag.
-func (p *AWSProvider) findEBSVolumeID(volumeID string) (string, error) {
-	ctx := context.TODO()
+func (p *AWSProvider) findEBSVolumeID(ctx context.Context, volumeID string) (string, error) {
 
 	result, err := p.ec2Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
 		Filters: []ec2types.Filter{
@@ -310,10 +303,8 @@ func (p *AWSProvider) findEBSVolumeID(volumeID string) (string, error) {
 }
 
 // ExpandVolume resizes an existing EBS volume to newSizeBytes.
-func (p *AWSProvider) ExpandVolume(volumeID string, newSizeBytes int64) error {
-	ctx := context.TODO()
-
-	ebsVolumeID, err := p.findEBSVolumeID(volumeID)
+func (p *AWSProvider) ExpandVolume(ctx context.Context, volumeID string, newSizeBytes int64) error {
+	ebsVolumeID, err := p.findEBSVolumeID(ctx, volumeID)
 	if err != nil {
 		return fmt.Errorf("cannot find EBS volume for %s: %w", volumeID, err)
 	}
@@ -352,7 +343,7 @@ func (p *AWSProvider) ExpandVolume(volumeID string, newSizeBytes int64) error {
 
 // CreateSnapshot creates an EBS snapshot from the given volume.
 func (p *AWSProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID string) (*provider.SnapshotInfo, error) {
-	ebsVolumeID, err := p.findEBSVolumeID(volumeID)
+	ebsVolumeID, err := p.findEBSVolumeID(ctx, volumeID)
 	if err != nil {
 		return nil, fmt.Errorf("cannot find EBS volume for snapshot: %w", err)
 	}
@@ -509,8 +500,8 @@ func (p *AWSProvider) ebsSnapshotToInfo(s *ec2types.Snapshot) *provider.Snapshot
 }
 
 // ListManagedVolumes returns all EBS volumes tagged with our CSI tag.
-func (p *AWSProvider) ListManagedVolumes() ([]*provider.VolumeInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+func (p *AWSProvider) ListManagedVolumes(ctx context.Context) ([]*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
 	defer cancel()
 
 	var vols []*provider.VolumeInfo
@@ -556,20 +547,18 @@ func (p *AWSProvider) ListManagedVolumes() ([]*provider.VolumeInfo, error) {
 }
 
 // CreateVolumeFromSnapshot creates a new EBS volume from an existing snapshot.
-func (p *AWSProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, sizeBytes int64) (*provider.VolumeInfo, error) {
-	ctx := context.TODO()
-
+func (p *AWSProvider) CreateVolumeFromSnapshot(ctx context.Context, volumeID, snapshotID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	if p.config.AvailabilityZone == "" {
 		return nil, fmt.Errorf("awsAvailabilityZone is required to create volumes")
 	}
 
-	exists, err := p.VolumeExists(volumeID)
+	exists, err := p.VolumeExists(ctx, volumeID)
 	if err != nil {
 		return nil, err
 	}
 	if exists {
 		logger.Printf("Volume %s already exists (from snapshot clone), reusing", volumeID)
-		return p.GetVolumeInfo(volumeID)
+		return p.GetVolumeInfo(ctx, volumeID)
 	}
 
 	ebsSnapID, err := p.findEBSSnapshotID(ctx, snapshotID)
@@ -637,20 +626,18 @@ func (p *AWSProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, size
 // CreateVolumeFromVolume creates a new EBS volume by first taking a
 // snapshot of the source, then creating from that snapshot.
 // The temporary snapshot is tagged for garbage collection.
-func (p *AWSProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
-	ctx := context.TODO()
-
+func (p *AWSProvider) CreateVolumeFromVolume(ctx context.Context, volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	if p.config.AvailabilityZone == "" {
 		return nil, fmt.Errorf("awsAvailabilityZone is required to create volumes")
 	}
 
-	exists, err := p.VolumeExists(volumeID)
+	exists, err := p.VolumeExists(ctx, volumeID)
 	if err != nil {
 		return nil, err
 	}
 	if exists {
 		logger.Printf("Volume %s already exists (from volume clone), reusing", volumeID)
-		return p.GetVolumeInfo(volumeID)
+		return p.GetVolumeInfo(ctx, volumeID)
 	}
 
 	tempSnapID := "clone-" + volumeID
@@ -686,7 +673,7 @@ func (p *AWSProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, si
 		logger.Printf("WARNING: snapshot %s did not complete in time: %v", ebsSnapID, err)
 	}
 
-	volInfo, err := p.CreateVolumeFromSnapshot(volumeID, snapInfo.SnapshotID, sizeBytes)
+	volInfo, err := p.CreateVolumeFromSnapshot(ctx, volumeID, snapInfo.SnapshotID, sizeBytes)
 	if err != nil {
 		p.DeleteSnapshot(ctx, tempSnapID) //nolint:errcheck
 		return nil, fmt.Errorf("creating volume from temp snapshot: %w", err)

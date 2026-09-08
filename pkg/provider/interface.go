@@ -20,27 +20,27 @@ type VolumeInfo struct {
 type BlockVolumeProvider interface {
 	// CreateVolume provisions a new block volume of the given size.
 	// Returns existing volume info if the volume already exists (idempotent).
-	CreateVolume(volumeID string, sizeBytes int64) (*VolumeInfo, error)
+	CreateVolume(ctx context.Context, volumeID string, sizeBytes int64) (*VolumeInfo, error)
 	// DeleteVolume removes a block volume.
 	// Returns nil if the volume does not exist (idempotent).
-	DeleteVolume(volumeID string) error
+	DeleteVolume(ctx context.Context, volumeID string) error
 	// GetVolumeInfo returns metadata about an existing volume.
-	GetVolumeInfo(volumeID string) (*VolumeInfo, error)
+	GetVolumeInfo(ctx context.Context, volumeID string) (*VolumeInfo, error)
 	// VolumeExists checks whether a volume with the given ID exists.
-	VolumeExists(volumeID string) (bool, error)
+	VolumeExists(ctx context.Context, volumeID string) (bool, error)
 }
 
 // VolumeExpander is an optional interface that providers can implement to
 // support online volume expansion (ControllerExpandVolume).
 type VolumeExpander interface {
-	ExpandVolume(volumeID string, newSizeBytes int64) error
+	ExpandVolume(ctx context.Context, volumeID string, newSizeBytes int64) error
 }
 
 // VolumeRecoverer is an optional interface that providers can implement
 // to list all volumes they manage (tagged with our CSI tag). This enables
 // the volume store to recover state after pod rescheduling.
 type VolumeRecoverer interface {
-	ListManagedVolumes() ([]*VolumeInfo, error)
+	ListManagedVolumes(ctx context.Context) ([]*VolumeInfo, error)
 }
 
 // VolumeSnapshotter is an optional interface that providers can implement
@@ -57,8 +57,8 @@ type VolumeSnapshotter interface {
 // VolumeCloner is an optional interface for creating a volume from an
 // existing snapshot or another volume.
 type VolumeCloner interface {
-	CreateVolumeFromSnapshot(volumeID, snapshotID string, sizeBytes int64) (*VolumeInfo, error)
-	CreateVolumeFromVolume(volumeID, sourceVolumeID string, sizeBytes int64) (*VolumeInfo, error)
+	CreateVolumeFromSnapshot(ctx context.Context, volumeID, snapshotID string, sizeBytes int64) (*VolumeInfo, error)
+	CreateVolumeFromVolume(ctx context.Context, volumeID, sourceVolumeID string, sizeBytes int64) (*VolumeInfo, error)
 }
 
 // SnapshotInfo holds provider-agnostic metadata about a volume snapshot.

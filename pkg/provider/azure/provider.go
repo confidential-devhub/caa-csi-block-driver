@@ -211,8 +211,8 @@ func (p *AzureProvider) buildDiskProperties(creationData *armcompute.CreationDat
 	return props
 }
 
-func (p *AzureProvider) CreateVolume(volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+func (p *AzureProvider) CreateVolume(ctx context.Context, volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
 	defer cancel()
 
 	if p.config.Location == "" {
@@ -221,13 +221,13 @@ func (p *AzureProvider) CreateVolume(volumeID string, sizeBytes int64) (*provide
 
 	name := p.diskName(volumeID)
 
-	exists, err := p.VolumeExists(volumeID)
+	exists, err := p.VolumeExists(ctx, volumeID)
 	if err != nil {
 		return nil, err
 	}
 	if exists {
 		logger.Printf("Volume %s already exists, reusing", volumeID)
-		return p.GetVolumeInfo(volumeID)
+		return p.GetVolumeInfo(ctx, volumeID)
 	}
 
 	sizeGiB := bytesToGiB(sizeBytes)
@@ -279,8 +279,8 @@ func (p *AzureProvider) CreateVolume(volumeID string, sizeBytes int64) (*provide
 	}, nil
 }
 
-func (p *AzureProvider) DeleteVolume(volumeID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+func (p *AzureProvider) DeleteVolume(ctx context.Context, volumeID string) error {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
 	defer cancel()
 	name := p.diskName(volumeID)
 
@@ -303,8 +303,7 @@ func (p *AzureProvider) DeleteVolume(volumeID string) error {
 	return nil
 }
 
-func (p *AzureProvider) GetVolumeInfo(volumeID string) (*provider.VolumeInfo, error) {
-	ctx := context.TODO()
+func (p *AzureProvider) GetVolumeInfo(ctx context.Context, volumeID string) (*provider.VolumeInfo, error) {
 	name := p.diskName(volumeID)
 
 	result, err := p.disksClient.Get(ctx, p.config.ResourceGroup, name, nil)
@@ -335,8 +334,7 @@ func (p *AzureProvider) GetVolumeInfo(volumeID string) (*provider.VolumeInfo, er
 	}, nil
 }
 
-func (p *AzureProvider) VolumeExists(volumeID string) (bool, error) {
-	ctx := context.TODO()
+func (p *AzureProvider) VolumeExists(ctx context.Context, volumeID string) (bool, error) {
 	name := p.diskName(volumeID)
 
 	_, err := p.disksClient.Get(ctx, p.config.ResourceGroup, name, nil)
@@ -349,8 +347,8 @@ func (p *AzureProvider) VolumeExists(volumeID string) (bool, error) {
 	return true, nil
 }
 
-func (p *AzureProvider) ExpandVolume(volumeID string, newSizeBytes int64) error {
-	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+func (p *AzureProvider) ExpandVolume(ctx context.Context, volumeID string, newSizeBytes int64) error {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
 	defer cancel()
 	name := p.diskName(volumeID)
 
@@ -387,8 +385,8 @@ func (p *AzureProvider) ExpandVolume(volumeID string, newSizeBytes int64) error 
 }
 
 // ListManagedVolumes returns all Azure Managed Disks tagged with our CSI tag.
-func (p *AzureProvider) ListManagedVolumes() ([]*provider.VolumeInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+func (p *AzureProvider) ListManagedVolumes(ctx context.Context) ([]*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
 	defer cancel()
 
 	pager := p.disksClient.NewListByResourceGroupPager(p.config.ResourceGroup, nil)
@@ -436,8 +434,8 @@ func (p *AzureProvider) ListManagedVolumes() ([]*provider.VolumeInfo, error) {
 	return vols, nil
 }
 
-func (p *AzureProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, sizeBytes int64) (*provider.VolumeInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+func (p *AzureProvider) CreateVolumeFromSnapshot(ctx context.Context, volumeID, snapshotID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
 	defer cancel()
 
 	if p.config.Location == "" {
@@ -446,13 +444,13 @@ func (p *AzureProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, si
 
 	name := p.diskName(volumeID)
 
-	exists, err := p.VolumeExists(volumeID)
+	exists, err := p.VolumeExists(ctx, volumeID)
 	if err != nil {
 		return nil, err
 	}
 	if exists {
 		logger.Printf("Volume %s already exists, reusing", volumeID)
-		return p.GetVolumeInfo(volumeID)
+		return p.GetVolumeInfo(ctx, volumeID)
 	}
 
 	sName := p.snapName(snapshotID)
@@ -507,8 +505,8 @@ func (p *AzureProvider) CreateVolumeFromSnapshot(volumeID, snapshotID string, si
 }
 
 // CreateVolumeFromVolume clones via direct disk copy (no intermediate snapshot).
-func (p *AzureProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+func (p *AzureProvider) CreateVolumeFromVolume(ctx context.Context, volumeID, sourceVolumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
 	defer cancel()
 
 	if p.config.Location == "" {
@@ -518,13 +516,13 @@ func (p *AzureProvider) CreateVolumeFromVolume(volumeID, sourceVolumeID string, 
 	name := p.diskName(volumeID)
 	sourceName := p.diskName(sourceVolumeID)
 
-	exists, err := p.VolumeExists(volumeID)
+	exists, err := p.VolumeExists(ctx, volumeID)
 	if err != nil {
 		return nil, err
 	}
 	if exists {
 		logger.Printf("Volume %s already exists, reusing", volumeID)
-		return p.GetVolumeInfo(volumeID)
+		return p.GetVolumeInfo(ctx, volumeID)
 	}
 
 	sizeGiB := bytesToGiB(sizeBytes)

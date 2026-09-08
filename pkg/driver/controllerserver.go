@@ -156,10 +156,10 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 				return nil, status.Errorf(codes.Unimplemented, "provider does not support creating volumes from snapshot")
 			}
 			csLogger.Printf("CreateVolume: %s from snapshot %s", req.GetName(), snapID)
-			volInfo, err = cloner.CreateVolumeFromSnapshot(req.GetName(), snapID, capacity)
+			volInfo, err = cloner.CreateVolumeFromSnapshot(ctx, req.GetName(), snapID, capacity)
 		case src.GetVolume() != nil:
 			srcVolID := src.GetVolume().GetVolumeId()
-			exists, existsErr := p.VolumeExists(srcVolID)
+			exists, existsErr := p.VolumeExists(ctx, srcVolID)
 			if existsErr != nil {
 				return nil, status.Errorf(codes.Internal, "failed to verify source volume %s: %v", srcVolID, existsErr)
 			}
@@ -171,12 +171,12 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 				return nil, status.Errorf(codes.Unimplemented, "provider does not support volume cloning")
 			}
 			csLogger.Printf("CreateVolume: %s cloned from volume %s", req.GetName(), srcVolID)
-			volInfo, err = cloner.CreateVolumeFromVolume(req.GetName(), srcVolID, capacity)
+			volInfo, err = cloner.CreateVolumeFromVolume(ctx, req.GetName(), srcVolID, capacity)
 		default:
 			return nil, status.Error(codes.InvalidArgument, "unsupported VolumeContentSource type")
 		}
 	} else {
-		volInfo, err = p.CreateVolume(req.GetName(), capacity)
+		volInfo, err = p.CreateVolume(ctx, req.GetName(), capacity)
 	}
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "provider.CreateVolume failed: %v", err)
@@ -217,7 +217,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	return &csi.CreateVolumeResponse{Volume: vol}, nil
 }
 
-func (cs *controllerServer) DeleteVolume(_ context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
+func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
 	volumeID := req.GetVolumeId()
 	if volumeID == "" {
 		return nil, status.Error(codes.InvalidArgument, "Volume ID missing")
@@ -242,7 +242,7 @@ func (cs *controllerServer) DeleteVolume(_ context.Context, req *csi.DeleteVolum
 		return nil, status.Errorf(codes.Internal, "failed to create provider for delete: %v", err)
 	}
 
-	if err := p.DeleteVolume(volumeID); err != nil {
+	if err := p.DeleteVolume(ctx, volumeID); err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "attached") || strings.Contains(errMsg, "in use") || strings.Contains(errMsg, "InUse") {
 			return nil, status.Errorf(codes.FailedPrecondition, "volume %s is still attached to an instance: %v", volumeID, err)
@@ -255,7 +255,7 @@ func (cs *controllerServer) DeleteVolume(_ context.Context, req *csi.DeleteVolum
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
-func (cs *controllerServer) ControllerExpandVolume(_ context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
+func (cs *controllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
 	volumeID := req.GetVolumeId()
 	if volumeID == "" {
 		return nil, status.Error(codes.InvalidArgument, "Volume ID missing")
@@ -285,7 +285,7 @@ func (cs *controllerServer) ControllerExpandVolume(_ context.Context, req *csi.C
 	}
 
 	if expander, ok := p.(provider.VolumeExpander); ok {
-		if err := expander.ExpandVolume(volumeID, requiredBytes); err != nil {
+		if err := expander.ExpandVolume(ctx, volumeID, requiredBytes); err != nil {
 			return nil, status.Errorf(codes.Internal, "provider.ExpandVolume failed: %v", err)
 		}
 	} else {

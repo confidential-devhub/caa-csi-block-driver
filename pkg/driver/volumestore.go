@@ -4,6 +4,7 @@
 package driver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -97,7 +98,7 @@ func (vs *volumeStore) RecoverFromCloud(params map[string]string) error {
 		return nil
 	}
 
-	vols, err := lister.ListManagedVolumes()
+	vols, err := lister.ListManagedVolumes(context.Background())
 	if err != nil {
 		return fmt.Errorf("listing managed volumes from cloud: %w", err)
 	}
