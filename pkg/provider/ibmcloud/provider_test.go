@@ -4,7 +4,9 @@
 package ibmcloud
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -273,7 +275,7 @@ func TestParseConfig(t *testing.T) {
 	if err != nil || custom.Iops != "5000" || len(custom.ExtraTags) != 2 {
 		t.Fatalf("custom parsing: %+v, %v", custom, err)
 	}
-	for _, key := range []string{"region", "zone", "resourceGroup"} {
+	for _, key := range []string{"region", "zone"} {
 		t.Run("missing_"+key, func(t *testing.T) {
 			params := testParams()
 			delete(params, key)
@@ -284,8 +286,9 @@ func TestParseConfig(t *testing.T) {
 		})
 	}
 	for _, change := range []map[string]string{
-		{"zone": "us-east-1"}, {"profile": "unsupported"}, {"profile": "custom"},
-		{"profile": "custom", "iops": "-1"}, {"iops": "5000"}, {"encrypted": "maybe"},
+		{"profile": "custom", "iops": "-1"}, {"encrypted": "maybe"},
+		{"profile": "sdp", "iops": "0"}, {"profile": "sdp", "iops": "bad"},
+		{"throughput": "-1"}, {"throughput": "0"}, {"throughput": "bad"}, {"throughput": "2147483648"},
 		{"encrypted": "true"}, {"encryptionKey": "key"}, {"tags": ownershipTagPrefix + "someone-else"},
 	} {
 		params := testParams()
@@ -294,6 +297,142 @@ func TestParseConfig(t *testing.T) {
 		}
 		if _, err := parseConfig(params); err == nil {
 			t.Errorf("accepted invalid config %v", change)
+		}
+	}
+}
+
+func TestResourceGroupDefault(t *testing.T) {
+	for _, explicit := range []string{"", "rg-override"} {
+		params := testParams()
+		params["resourceGroup"] = explicit
+		cfg, err := parseConfig(params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.ResourceGroup, err = resolveResourceGroup(cfg.ResourceGroup, "rg-cluster")
+		want := explicit
+		if want == "" {
+			want = "rg-cluster"
+		}
+		if err != nil || cfg.ResourceGroup != want {
+			t.Fatalf("resource group: %q, %v", cfg.ResourceGroup, err)
+		}
+		s := &fakeSession{}
+		p := &IBMCloudProvider{session: s, config: cfg}
+		if _, err := p.CreateVolume("pvc-test", 20*gib); err != nil {
+			t.Fatal(err)
+		}
+		if s.volumes[0].ResourceGroup.ID != want {
+			t.Fatal("resolved group not sent to SDK")
+		}
+		if err := p.DeleteVolume("pvc-test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := resolveResourceGroup("", ""); !errors.Is(err, caa.ErrInvalidParameters) {
+		t.Fatalf("missing provider default: %v", err)
+	}
+	if got, err := resolveResourceGroup("rg-explicit", ""); err != nil || got != "rg-explicit" {
+		t.Fatalf("explicit group should not require default: %q %v", got, err)
+	}
+}
+
+func TestSDPCreateRetryRecoveryAndDelete(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit-performance-%t", explicit), func(t *testing.T) {
+			params := testParams()
+			params["profile"] = "sdp"
+			size := gib
+			if explicit {
+				params["iops"] = "03000"
+				params["throughput"] = "02000"
+				size = 30*gib + 1
+			}
+			cfg, err := parseConfig(params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := &fakeSession{}
+			p := &IBMCloudProvider{session: s, config: cfg}
+			first, err := p.CreateVolume("pvc-sdp", size)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v := s.volumes[0]
+			if explicit {
+				if *v.Iops != "3000" || v.Bandwidth != 2000 || first.SizeBytes != 31*gib {
+					t.Fatalf("SDP request: %+v", v)
+				}
+			} else {
+				if v.Iops != nil || v.Bandwidth != 0 || first.SizeBytes != gib {
+					t.Fatal("defaults must be omitted; 1 GiB must not become 10 GiB")
+				}
+				// Simulate server-selected performance returned by the SDK.
+				iops := "3000"
+				v.Iops, v.Bandwidth = &iops, 1000
+			}
+			restarted := &IBMCloudProvider{session: s, config: cfg}
+			second, err := restarted.CreateVolume("pvc-sdp", size)
+			if err != nil || !reflect.DeepEqual(first, second) || s.creates != 1 {
+				t.Fatalf("SDP retry: %+v %v", second, err)
+			}
+			if recovered, err := restarted.ListManagedVolumes(); err != nil || len(recovered) != 1 {
+				t.Fatalf("SDP recovery: %+v %v", recovered, err)
+			}
+			if explicit {
+				v.Bandwidth++
+				if _, err := restarted.CreateVolume("pvc-sdp", size); !errors.Is(err, caa.ErrVolumeAlreadyExists) {
+					t.Fatalf("throughput mismatch accepted: %v", err)
+				}
+				v.Bandwidth--
+				wrongIOPS := "4000"
+				v.Iops = &wrongIOPS
+				if _, err := restarted.CreateVolume("pvc-sdp", size); !errors.Is(err, caa.ErrVolumeAlreadyExists) {
+					t.Fatalf("IOPS mismatch accepted: %v", err)
+				}
+				v.Iops = &cfg.Iops
+			}
+			if err := restarted.DeleteVolume("pvc-sdp"); err != nil {
+				t.Fatal(err)
+			}
+			if err := restarted.DeleteVolume("pvc-sdp"); err != nil || s.deletes != 1 {
+				t.Fatalf("SDP delete retry: %v", err)
+			}
+		})
+	}
+}
+
+func TestExistingConfigurationTagUnchanged(t *testing.T) {
+	p, s := testProvider(t)
+	// Exact pre-SDP serialized configuration; old volumes must remain manageable.
+	legacy := `{"Region":"us-south","Zone":"us-south-1","ResourceGroup":"rg-test","Profile":"general-purpose","Iops":"","Encrypted":"false","EncryptionKey":"","BillingType":"hourly","ExtraTags":null,"FsType":"ext4"}`
+	want := fmt.Sprintf("%s%x", configTagPrefix, sha256.Sum256([]byte(legacy)))
+	if p.configTag() != want {
+		t.Fatal("adding SDP changed existing configuration tags")
+	}
+	if _, err := p.CreateVolume("pvc-test", 20*gib); err != nil {
+		t.Fatal(err)
+	}
+	s.volumes[0].Tags = []string{ownershipTagPrefix + "pvc-test", want}
+	if err := p.DeleteVolume("pvc-test"); err != nil {
+		t.Fatalf("legacy volume deletion: %v", err)
+	}
+}
+
+func TestCloudPlacementAndProfilePassedThrough(t *testing.T) {
+	for _, change := range []map[string]string{
+		{"zone": "us-east-1"}, {"profile": "unsupported"},
+	} {
+		params := testParams()
+		for key, value := range change {
+			params[key] = value
+		}
+		cfg, err := parseConfig(params)
+		if err != nil {
+			t.Fatalf("cloud-owned validation performed locally: %v", err)
+		}
+		if cfg.Zone != params["zone"] || (params["profile"] != "" && cfg.Profile != params["profile"]) {
+			t.Fatalf("cloud parameters changed: %+v", cfg)
 		}
 	}
 }
@@ -309,6 +448,13 @@ func TestNormalizeCapacity(t *testing.T) {
 	for _, in := range []int64{-1, math.MaxInt64} {
 		if _, err := p.NormalizeCapacity(in); err == nil {
 			t.Errorf("accepted %d", in)
+		}
+	}
+	p.config.Profile = "sdp"
+	for _, tc := range []struct{ in, want int64 }{{0, gib}, {1, gib}, {gib, gib}, {gib + 1, 2 * gib}} {
+		got, err := p.NormalizeCapacity(tc.in)
+		if err != nil || got != tc.want {
+			t.Errorf("SDP %d: got %d, %v", tc.in, got, err)
 		}
 	}
 }

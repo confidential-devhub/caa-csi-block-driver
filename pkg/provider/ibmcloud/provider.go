@@ -42,13 +42,14 @@ type Config struct {
 	Region        string
 	Zone          string
 	ResourceGroup string
-	Profile       string   // e.g., "general-purpose", "5iops-tier", "10iops-tier", "custom"
-	Iops          string   // Custom profile IOPS
+	Profile       string   // e.g., "general-purpose", "5iops-tier", "10iops-tier", "custom", "sdp"
+	Iops          string   // Custom/SDP profile IOPS; empty uses cloud defaults
 	Encrypted     string   // "true" or "false"
 	EncryptionKey string   // Key CRN
 	BillingType   string   // e.g., "hourly"
 	ExtraTags     []string // User-supplied extra tags
 	FsType        string   // e.g., "ext4"
+	Throughput    int32    `json:",omitempty"` // Mbps; omit zero to preserve existing configuration tags
 }
 
 // IBMCloudProvider manages VPC block volumes using the official community ibmcloud-volume-vpc SDK.
@@ -119,25 +120,28 @@ func parseConfig(params map[string]string) (Config, error) {
 		ExtraTags:     extraTags,
 		FsType:        params["csi.storage.k8s.io/fstype"],
 	}
-	if cfg.Region == "" || cfg.Zone == "" || cfg.ResourceGroup == "" {
-		return Config{}, fmt.Errorf("region, zone and resourceGroup must be explicitly configured")
+	if cfg.Region == "" || cfg.Zone == "" {
+		return Config{}, fmt.Errorf("region and zone must be explicitly configured")
 	}
-	if !strings.HasPrefix(cfg.Zone, cfg.Region+"-") {
-		return Config{}, fmt.Errorf("zone %q is not in region %q", cfg.Zone, cfg.Region)
+	// The VPC API validates profile availability and zone placement.
+	// Like the upstream driver, ignore IOPS for tiered profiles.
+	if cfg.Profile != "custom" && cfg.Profile != "sdp" {
+		cfg.Iops = ""
 	}
-	switch cfg.Profile {
-	case "general-purpose", "5iops-tier", "10iops-tier", "custom":
-	default:
-		return Config{}, fmt.Errorf("unsupported profile %q for this provisioning implementation", cfg.Profile)
-	}
-	if cfg.Profile == "custom" {
-		iops, err := strconv.Atoi(cfg.Iops)
+	if cfg.Iops != "" {
+		iops, err := strconv.ParseInt(cfg.Iops, 10, 64)
 		if err != nil || iops <= 0 {
-			return Config{}, fmt.Errorf("custom profile requires positive iops")
+			return Config{}, fmt.Errorf("iops must be a positive integer")
 		}
-		cfg.Iops = strconv.Itoa(iops)
-	} else if cfg.Iops != "" {
-		return Config{}, fmt.Errorf("iops is only supported with the custom profile")
+		cfg.Iops = strconv.FormatInt(iops, 10)
+	}
+	// Match the upstream StorageClass key and SDK bandwidth units (Mbps).
+	if value := params["throughput"]; value != "" {
+		bandwidth, err := strconv.ParseInt(value, 10, 32)
+		if err != nil || bandwidth <= 0 {
+			return Config{}, fmt.Errorf("throughput must be a positive int32 (Mbps)")
+		}
+		cfg.Throughput = int32(bandwidth)
 	}
 	if cfg.BillingType == "" {
 		cfg.BillingType = "hourly"
@@ -182,6 +186,12 @@ func newProviderWithConfig(cfg Config) (*IBMCloudProvider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create NewIBMCloudStorageProvider: %w", err)
 	}
+	// The SDK requires a resource group in its request. Upstream defaults it
+	// from this same provider configuration when the StorageClass omits it.
+	cfg.ResourceGroup, err = resolveResourceGroup(cfg.ResourceGroup, storageProvider.GetConfig().VPC.G2ResourceGroupID)
+	if err != nil {
+		return nil, err
+	}
 
 	// Retrieve the active VPC Storage Provider Session
 	session, err := storageProvider.GetProviderSession(context.TODO(), zapLogger)
@@ -195,15 +205,22 @@ func newProviderWithConfig(cfg Config) (*IBMCloudProvider, error) {
 	}, nil
 }
 
+// resolveResourceGroup returns the explicit StorageClass resource group if set,
+// or falls back to the cluster's configured resource group from the SDK config.
+// Returns ErrInvalidParameters only when neither is available.
+func resolveResourceGroup(explicit, configured string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	if configured == "" {
+		return "", fmt.Errorf("%w: resourceGroup is omitted and the provider has no g2_resource_group_id; configure either value", caaProvider.ErrInvalidParameters)
+	}
+	return configured, nil
+}
+
 // CreateVolume provisions a new VPC Block Volume using the ibmcloud-volume-vpc SDK.
 func (p *IBMCloudProvider) CreateVolume(volumeID string, sizeBytes int64) (*caaProvider.VolumeInfo, error) {
-	if p.config.Zone == "" {
-		return nil, fmt.Errorf("zone (or ibmZone) parameter is required to create a new volume")
-	}
-
-	if volumeID == "" {
-		return nil, fmt.Errorf("%w: empty volume name", caaProvider.ErrInvalidParameters)
-	}
+	// Configuration is checked at construction; lookupVolume checks the name.
 	allocated, err := p.NormalizeCapacity(sizeBytes)
 	if err != nil {
 		return nil, err
@@ -242,6 +259,7 @@ func (p *IBMCloudProvider) CreateVolume(volumeID string, sizeBytes int64) (*caaP
 		Region:      p.config.Region,
 		BillingType: p.config.BillingType,
 		VPCVolume: provider.VPCVolume{
+			Bandwidth: p.config.Throughput,
 			Profile: &provider.Profile{
 				Name: p.config.Profile,
 			},
@@ -261,8 +279,8 @@ func (p *IBMCloudProvider) CreateVolume(volumeID string, sizeBytes int64) (*caaP
 		}
 	}
 
-	// Setup custom IOPS if specified and profile is custom
-	if p.config.Iops != "" && p.config.Profile == "custom" {
+	// The parser retains IOPS only for custom and SDP profiles.
+	if p.config.Iops != "" {
 		volRequest.Iops = &p.config.Iops
 	}
 
@@ -370,8 +388,12 @@ func (p *IBMCloudProvider) NormalizeCapacity(sizeBytes int64) (int64, error) {
 	if sizeBytes%gib != 0 {
 		units++
 	}
-	if units < 10 {
-		units = 10
+	minimum := int64(10)
+	if p.config.Profile == "sdp" {
+		minimum = 1
+	}
+	if units < minimum {
+		units = minimum
 	}
 	if units > math.MaxInt64/gib {
 		return 0, fmt.Errorf("%w: capacity overflows int64", caaProvider.ErrInvalidParameters)
@@ -469,8 +491,11 @@ func (p *IBMCloudProvider) checkOwnedVolume(vol *provider.Volume, name string) e
 	if vol.VolumeEncryptionKey != nil && key != p.config.EncryptionKey {
 		return fmt.Errorf("%w: encryption key mismatch", caaProvider.ErrVolumeAlreadyExists)
 	}
-	if p.config.Profile == "custom" && (vol.Iops == nil || *vol.Iops != p.config.Iops) {
-		return fmt.Errorf("%w: custom IOPS mismatch", caaProvider.ErrVolumeAlreadyExists)
+	if p.config.Iops != "" && (vol.Iops == nil || *vol.Iops != p.config.Iops) {
+		return fmt.Errorf("%w: IOPS mismatch", caaProvider.ErrVolumeAlreadyExists)
+	}
+	if p.config.Throughput != 0 && vol.Bandwidth != p.config.Throughput {
+		return fmt.Errorf("%w: throughput mismatch", caaProvider.ErrVolumeAlreadyExists)
 	}
 	return nil
 }
