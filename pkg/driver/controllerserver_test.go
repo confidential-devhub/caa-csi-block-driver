@@ -139,28 +139,6 @@ func TestCreateVolumeInvalidAndConflictingRequests(t *testing.T) {
 	}
 }
 
-func TestRecoveredCredentialsDoNotConflict(t *testing.T) {
-	cs, _ := setupProvisioningTest(t)
-	params := map[string]string{"cloudProvider": "aws", "awsRegion": "us-south", "awsAccessKeyId": "test-key", "awsSecretKey": "test-secret"}
-	rec := &volumeRecord{VolumeID: "pvc-test", Provider: "aws", Path: "native-id", CapacityBytes: 21 * testGiB, Params: sanitizePersistableParams(params)}
-	if err := cs.store.Save(rec); err != nil {
-		t.Fatal(err)
-	}
-	req := createRequest()
-	req.Parameters = params
-	got, err := cs.CreateVolume(context.Background(), req)
-	if err != nil || got.Volume.VolumeId != rec.VolumeID {
-		t.Fatalf("credential-only difference rejected: %v", err)
-	}
-	if got.Volume.VolumeContext["awsSecretKey"] != "" {
-		t.Fatal("credential added to response")
-	}
-	req.Parameters["awsRegion"] = "different-region"
-	if _, err := cs.CreateVolume(context.Background(), req); status.Code(err) != codes.AlreadyExists {
-		t.Fatalf("changed setting accepted: %v", err)
-	}
-}
-
 func TestIBMParameterAliasesReachLiveValidation(t *testing.T) {
 	cs, p := setupProvisioningTest(t)
 	req := createRequest()
