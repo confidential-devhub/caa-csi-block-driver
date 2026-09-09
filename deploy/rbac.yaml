@@ -21,6 +21,11 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["list", "watch", "create", "update", "patch"]
+  # The IBM provider reads its configuration from storage-secret-store.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["storage-secret-store"]
+    verbs: ["get"]
   - apiGroups: ["storage.k8s.io"]
     resources: ["csinodes"]
     verbs: ["get", "list", "watch"]
@@ -46,3 +51,19 @@ roleRef:
   kind: ClusterRole
   name: caa-csi-provisioner-role
   apiGroup: rbac.authorization.k8s.io
+---
+# OpenShift requires explicit SCC authorization for the privileged driver and
+# node registrar containers that access kubelet and Kata host paths.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: caa-csi-provisioner-privileged-scc
+  namespace: caa-csi-block
+subjects:
+  - kind: ServiceAccount
+    name: caa-csi-provisioner
+    namespace: caa-csi-block
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:privileged

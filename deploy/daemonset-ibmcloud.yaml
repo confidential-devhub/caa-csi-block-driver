@@ -18,11 +18,14 @@ spec:
       containers:
         # Sidecar: csi-provisioner (handles CreateVolume/DeleteVolume RPCs from Kubernetes)
         - name: csi-provisioner
-          image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.0
+          image: registry.k8s.io/sig-storage/csi-provisioner:v6.2.0
           args:
-            - "-v=3"
+            - "--v=3"
             - "--csi-address=/csi/csi.sock"
-            - "--worker-threads=5"
+            - "--timeout=600s"
+            - "--worker-threads=1"
+            - "--leader-election=true"
+            - "--leader-election-namespace=caa-csi-block"
           env:
             - name: NODE_NAME
               valueFrom:
@@ -37,7 +40,8 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
           securityContext:
-            privileged: true
+            privileged: false
+            allowPrivilegeEscalation: false
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
@@ -68,6 +72,7 @@ spec:
           args:
             - "--drivername=caa-csi-block.csi.confidentialcontainers.io"
             - "--endpoint=unix:///csi/csi.sock"
+            - "--sidecarEndpoint=/csi/provider.sock"
             - "--nodeid=$(KUBE_NODE_NAME)"
           env:
             - name: KUBE_NODE_NAME
@@ -99,7 +104,40 @@ spec:
               name: customer-auth
               readOnly: true
 
+        # Provides short-lived IBM credentials to the driver over provider.sock.
+        - name: storage-secret-sidecar
+          image: icr.io/obs/armada-storage-secret:v1.3.65
+          args:
+            - "--endpoint=unix:/sidecardir/provider.sock"
+          env:
+            - name: TOKEN_EXPIRY_DIFF
+              value: "20m"
+            - name: PROFILE_CAPACITY
+              value: "1"
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 20Mi
+            limits:
+              cpu: 40m
+              memory: 80Mi
+          volumeMounts:
+            - mountPath: /sidecardir
+              name: socket-dir
+            - mountPath: /var/run/secrets/tokens
+              name: vault-token
+              readOnly: true
+
       volumes:
+        - name: vault-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: vault-token
+                  expirationSeconds: 600
         - name: socket-dir
           hostPath:
             path: /var/lib/kubelet/plugins/caa-csi-block
