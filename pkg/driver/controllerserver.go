@@ -11,7 +11,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -27,9 +26,6 @@ var csLogger = log.New(log.Writer(), "[caa-csi/controller] ", log.LstdFlags|log.
 type controllerServer struct {
 	csi.UnimplementedControllerServer
 	store *volumeStore
-	// Serialize creates in the single-controller provisioning deployment.
-	// The cloud lookup still provides idempotency after controller restarts.
-	createMu sync.Mutex
 }
 
 func newControllerServer() *controllerServer {
@@ -89,16 +85,8 @@ func volumeLookupStatus(kind, volumeID string, err error) error {
 }
 
 func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
-	if !validVolumeID(req.GetName()) {
-		return nil, status.Error(codes.InvalidArgument, "Invalid volume name")
-	}
-	// Limit serialization to the IBM provisioning path.
-	if req.GetParameters()["cloudProvider"] == "ibmcloud" {
-		cs.createMu.Lock()
-		defer cs.createMu.Unlock()
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+	if req.GetName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "Volume name missing")
 	}
 	if len(req.GetVolumeCapabilities()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Volume capabilities missing")
@@ -118,43 +106,19 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 
 	capacity := req.GetCapacityRange().GetRequiredBytes()
-	limit := req.GetCapacityRange().GetLimitBytes()
-	if capacity < 0 || limit < 0 || (limit > 0 && capacity > limit) {
-		return nil, status.Error(codes.InvalidArgument, "Invalid capacity range")
-	}
 	if capacity == 0 {
 		capacity = 1073741824 // default 1 GiB
-		if limit > 0 && capacity > limit {
-			capacity = limit
-		}
 	}
 
 	if rec, err := cs.store.Load(req.GetName()); err == nil {
-		// IBM validates canonical settings against the live configuration marker;
-		// aliases/defaults must not be rejected by a raw map comparison first.
-		paramsMatch := rec.Provider == params["cloudProvider"]
-		if rec.CapacityBytes < capacity || (limit > 0 && rec.CapacityBytes > limit) || !paramsMatch {
+		if rec.CapacityBytes != 0 && rec.CapacityBytes != capacity {
 			return nil, status.Errorf(codes.AlreadyExists,
-				"volume %s already exists with incompatible capacity or parameters", req.GetName())
+				"volume %s already exists with different capacity (%d != %d)", req.GetName(), rec.CapacityBytes, capacity)
 		}
-		// IBM must validate the live volume (ownership, state and properties),
-		// rather than trusting an old local record after a restart.
-		if rec.Provider != "ibmcloud" {
-			csLogger.Printf("CreateVolume: %s already exists, returning existing", req.GetName())
-			volumeCtx := map[string]string{"cloudProvider": rec.Provider}
-			for k, v := range rec.Params {
-				volumeCtx[k] = v
-			}
-			for k, v := range rec.Metadata {
-				volumeCtx[k] = v
-			}
-			return &csi.CreateVolumeResponse{
-				Volume: &csi.Volume{
-					VolumeId:      req.GetName(),
-					CapacityBytes: rec.CapacityBytes,
-					VolumeContext: volumeCtx,
-				},
-			}, nil
+		csLogger.Printf("CreateVolume: %s already exists, returning existing", req.GetName())
+		volumeCtx := map[string]string{"cloudProvider": rec.Provider}
+		for k, v := range rec.Params {
+			volumeCtx[k] = v
 		}
 		return &csi.CreateVolumeResponse{
 			Volume: &csi.Volume{
@@ -168,16 +132,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 
 	p, err := provider.NewBlockVolumeProvider(params)
 	if err != nil {
-		return nil, provisioningError("initializing provider", err)
-	}
-	if normalizer, ok := p.(provider.CapacityNormalizer); ok {
-		capacity, err = normalizer.NormalizeCapacity(capacity)
-		if err != nil {
-			return nil, provisioningError("normalizing capacity", err)
-		}
-	}
-	if limit > 0 && capacity > limit {
-		return nil, status.Error(codes.OutOfRange, "allocated capacity would exceed limitBytes")
+		return nil, status.Errorf(codes.InvalidArgument, "failed to create provider: %v", err)
 	}
 
 	var volInfo *provider.VolumeInfo
@@ -224,21 +179,17 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		volInfo, err = p.CreateVolume(ctx, req.GetName(), capacity)
 	}
 	if err != nil {
-		return nil, provisioningError("creating volume", err)
-	}
-	if volInfo == nil || volInfo.Path == "" || volInfo.SizeBytes < capacity || (limit > 0 && volInfo.SizeBytes > limit) {
-		return nil, status.Error(codes.Internal, "provider returned an incomplete volume or an incompatible capacity")
+		return nil, status.Errorf(codes.Internal, "provider.CreateVolume failed: %v", err)
 	}
 
 	if err := cs.store.Save(&volumeRecord{
 		VolumeID:      req.GetName(),
 		Provider:      volInfo.Provider,
 		Path:          volInfo.Path,
-		CapacityBytes: volInfo.SizeBytes,
+		CapacityBytes: capacity,
 		Params:        params,
-		Metadata:      volInfo.Metadata,
 	}); err != nil {
-		return nil, status.Errorf(codes.Internal, "volume exists in cloud but persisting its record failed; retry safely: %v", err)
+		csLogger.Printf("failed to persist volume record for %s: %v (volume created in cloud but record may be lost)", req.GetName(), err)
 	}
 	csLogger.Printf("CreateVolume: %s (provider=%s, path=%s)", req.GetName(), volInfo.Provider, volInfo.Path)
 

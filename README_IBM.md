@@ -65,14 +65,8 @@ The provider supports both the standard Kubernetes-SIG community keys and an alt
 | `tags` | Comma-separated list of tags to append to the volume | `"confidential,caa-csi"` |
 | `csi.storage.k8s.io/fstype` | Default filesystem used | `"ext4"` (default) or `"xfs"` |
 
-SDP uses a 1 GiB minimum; tiered/custom profiles retain the 10 GiB minimum.
-The driver rounds requests up to whole GiB. The VPC API validates available
-profiles and capacity/performance combinations; no maximum-range table is
-duplicated here. An SDP StorageClass can use `profile: "sdp"`, `iops: "3000"`
-and `throughput: "2000"` for a 30 GiB test PVC (plus the normal placement fields).
-
-References: [IBM StorageClass documentation](https://cloud.ibm.com/docs/openshift?topic=openshift-vpc-block#custom-sc),
-[upstream parameter/default handling](https://github.com/kubernetes-sigs/ibm-vpc-block-csi-driver/blob/master/pkg/ibmcsidriver/controller_helper.go).
+SDP volumes can start at 1 GiB. Other profiles require at least 10 GiB. The IBM
+VPC provider validates supported profile, capacity, IOPS, and throughput combinations.
 
 ---
 
@@ -90,8 +84,9 @@ kubectl apply -f deploy/csi-driver.yaml
 > The DaemonSet expects IBM authentication configuration in the
 > `caa-csi-block` namespace. Kubernetes service accounts and secrets are
 > namespace-scoped, so resources from `kube-system` are not reused automatically.
-> Ensure `caa-csi-provisioner` is authorized for the cluster's IBM IAM setup and
-> that `storage-secret-store` exists in `caa-csi-block` before deploying.
+> Ensure the IBM IAM trusted profile authorizes
+> `system:serviceaccount:caa-csi-block:caa-csi-provisioner`, and that both
+> `storage-secret-store` and `cluster-info` exist in `caa-csi-block` before deploying.
 
 ### Step 2: Deploy the DaemonSet
 Update `deploy/daemonset-ibmcloud.yaml` to point to the built driver image, then deploy it:
@@ -111,7 +106,10 @@ kubectl apply -f deploy/storageclass-ibmcloud.yaml
 
 ## 5. Verifying & Testing
 
-Save the following as `test-pvc.yaml`:
+Create a test PVC and map it to a sandboxed PeerPod to verify volume creation,
+publishing, mounting, and deletion.
+
+Save the following as `test-pvc-pod.yaml`:
 
 ```yaml
 apiVersion: v1
@@ -123,26 +121,44 @@ spec:
   accessModes: [ReadWriteOnce]
   resources:
     requests:
-      storage: 10Gi # Minimum for non-SDP profiles
+      storage: 10Gi # Minimum supported VPC Block size for non-SDP profiles
   storageClassName: caa-csi-ibmcloud
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ibmcloud-test-pod
+  namespace: default
+spec:
+  runtimeClassName: kata-remote # Targets the PodVM / PeerPod runtime
+  containers:
+  - name: app
+    image: busybox
+    command: ["sh", "-c", "echo 'Hello from IBM Cloud' > /data/test.txt && sleep 3600"]
+    volumeMounts:
+    - name: data-vol
+      mountPath: /data
+  volumes:
+  - name: data-vol
+    persistentVolumeClaim:
+      claimName: ibmcloud-test-pvc
 ```
 
-Create the volume and verify that the claim becomes `Bound`:
+Apply the configuration:
 
 ```bash
-kubectl apply -f test-pvc.yaml
-kubectl get pvc ibmcloud-test-pvc -w
+kubectl apply -f test-pvc-pod.yaml
 ```
 
-Check the driver logs if provisioning fails:
+Check the status of the volume and pod:
 
 ```bash
+# Verify the PVC status goes to 'Bound'
+kubectl get pvc ibmcloud-test-pvc
+
+# Verify the driver logs volume creation
 kubectl logs -n caa-csi-block -l app=caa-csi-block -c caa-csi-block-driver
-```
 
-Delete the test claim. Because the supplied StorageClass uses
-`reclaimPolicy: Delete`, the corresponding IBM VPC volume is also deleted:
-
-```bash
-kubectl delete -f test-pvc.yaml
+# Verify the pod goes to 'Running' with the PeerPod runtime
+kubectl get pod ibmcloud-test-pod
 ```

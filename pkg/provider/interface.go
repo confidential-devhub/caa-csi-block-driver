@@ -3,27 +3,12 @@
 
 package provider
 
-import (
-	"context"
-	"errors"
-)
-
-var (
-	ErrInvalidParameters   = errors.New("invalid provider parameters")
-	ErrVolumeNotFound      = errors.New("volume not found")
-	ErrVolumeAlreadyExists = errors.New("volume exists with incompatible properties")
-)
-
-// CapacityNormalizer allows the controller to check the allocated size against
-// the CSI capacity limit before issuing a cloud create request.
-type CapacityNormalizer interface {
-	NormalizeCapacity(sizeBytes int64) (int64, error)
-}
+import "context"
 
 // VolumeInfo holds provider-agnostic metadata about a block volume.
 type VolumeInfo struct {
 	VolumeID  string
-	Path      string // File path (Libvirt) or cloud volume ID (AWS EBS)
+	Path      string            // File path (Libvirt) or cloud volume ID (AWS EBS)
 	SizeBytes int64
 	Provider  string            // "libvirt", "aws"
 	Metadata  map[string]string // Provider-specific data passed via mountInfo.json

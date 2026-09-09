@@ -30,7 +30,7 @@ func RegisterProvider(name string, factory ProviderFactory) {
 func NewBlockVolumeProvider(params map[string]string) (BlockVolumeProvider, error) {
 	name := params["cloudProvider"]
 	if name == "" {
-		return nil, fmt.Errorf("%w: StorageClass parameter 'cloudProvider' is required (e.g., 'libvirt', 'aws')", ErrInvalidParameters)
+		return nil, fmt.Errorf("StorageClass parameter 'cloudProvider' is required (e.g., 'libvirt', 'aws')")
 	}
 
 	mu.Lock()
@@ -41,7 +41,7 @@ func NewBlockVolumeProvider(params map[string]string) (BlockVolumeProvider, erro
 			supported = append(supported, k)
 		}
 		mu.Unlock()
-		return nil, fmt.Errorf("%w: unsupported cloud provider %q, supported: %v", ErrInvalidParameters, name, supported)
+		return nil, fmt.Errorf("unsupported cloud provider %q, supported: %v", name, supported)
 	}
 	mu.Unlock()
 

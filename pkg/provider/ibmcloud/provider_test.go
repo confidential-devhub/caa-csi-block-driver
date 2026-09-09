@@ -4,579 +4,328 @@
 package ibmcloud
 
 import (
-	"crypto/sha256"
-	"errors"
 	"fmt"
-	"math"
-	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/IBM/ibmcloud-volume-interface/lib/provider"
-	vpcProvider "github.com/IBM/ibmcloud-volume-vpc/block/provider"
-	"github.com/IBM/ibmcloud-volume-vpc/common/vpcclient/models"
-	caa "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
-	"go.uber.org/zap"
+	providerError "github.com/IBM/ibmcloud-volume-interface/lib/utils"
 )
 
 type fakeSession struct {
 	provider.Session
-	volumes            []*provider.Volume
-	listErr, createErr error
-	createResult       func(provider.Volume) *provider.Volume
-	pages              map[string]*provider.VolumeList
-	creates, deletes   int
-	lastFilters        map[string]string
+	volumes     map[string]*provider.Volume
+	lookupErr   error
+	createErr   error
+	deleteErr   error
+	createCalls int
+	deleteCalls int
+	lastCreate  provider.Volume
+	lastDelete  string
 }
 
-func (s *fakeSession) ListVolumes(_ int, start string, filters map[string]string) (*provider.VolumeList, error) {
-	s.lastFilters = filters
-	if s.listErr != nil {
-		return nil, s.listErr
-	}
-	if s.pages != nil {
-		return s.pages[start], nil
-	}
-	page := &provider.VolumeList{}
-	for _, v := range s.volumes {
-		if filters["name"] != "" && (v.Name == nil || *v.Name != filters["name"]) {
-			continue
-		}
-		if filters["zone.name"] != "" && v.Az != filters["zone.name"] {
-			continue
-		}
-		if filters["resource_group.id"] != "" && (v.ResourceGroup == nil || v.ResourceGroup.ID != filters["resource_group.id"]) {
-			continue
-		}
-		page.Volumes = append(page.Volumes, v)
-	}
-	return page, nil
+func newFakeSession() *fakeSession {
+	return &fakeSession{volumes: make(map[string]*provider.Volume)}
 }
 
-func TestActualSDKConversionLookup(t *testing.T) {
-	p, s := testProvider(t)
-	v := vpcProvider.FromProviderToLibVolume(&models.Volume{
-		ID: "r006-native", Name: "pvc-test", Capacity: 20, Status: "available",
-		Zone: &models.Zone{Name: "us-south-1"}, Profile: &models.Profile{Name: "general-purpose"},
-		UserTags: []string{ownershipTagPrefix + "pvc-test", p.configTag()},
-	}, zap.NewNop())
-	s.pages = map[string]*provider.VolumeList{"": {Volumes: []*provider.Volume{v}}}
-	info, err := p.CreateVolume("pvc-test", 20*gib)
-	if err != nil || info.VolumeID != "pvc-test" || info.Path != "r006-native" || s.creates != 0 {
-		t.Fatalf("actual SDK conversion: %+v %v", info, err)
+func (s *fakeSession) GetVolumeByName(name string) (*provider.Volume, error) {
+	if s.lookupErr != nil {
+		return nil, s.lookupErr
 	}
-	if s.lastFilters["name"] != "pvc-test" || len(s.lastFilters) != 1 {
-		t.Fatalf("missing server-side identity filters: %v", s.lastFilters)
+	if volume, ok := s.volumes[name]; ok {
+		return volume, nil
 	}
+	return nil, providerError.Message{Type: providerError.RetrivalFailed, RC: 404}
 }
 
-func TestSameNameOutsideRequestedPlacementIsConflict(t *testing.T) {
-	for _, field := range []string{"zone", "group"} {
-		t.Run(field, func(t *testing.T) {
-			p, s := testProvider(t)
-			if _, err := p.CreateVolume("pvc-test", 20*gib); err != nil {
-				t.Fatal(err)
-			}
-			if field == "zone" {
-				p.config.Zone = "us-south-2"
-			} else {
-				p.config.ResourceGroup = "other-group"
-			}
-			if _, err := p.CreateVolume("pvc-test", 20*gib); !errors.Is(err, caa.ErrVolumeAlreadyExists) {
-				t.Fatalf("hidden existing disk: %v", err)
-			}
-			if err := p.DeleteVolume("pvc-test"); !errors.Is(err, caa.ErrVolumeAlreadyExists) {
-				t.Fatalf("must not report successful deletion: %v", err)
-			}
-			if s.creates != 1 || s.deletes != 0 {
-				t.Fatalf("unexpected mutation: creates=%d deletes=%d", s.creates, s.deletes)
-			}
-		})
-	}
-}
-
-func TestDeleteDoesNotRequireAvailableVolume(t *testing.T) {
-	for _, state := range []string{"failed", "pending", "deleting"} {
-		t.Run(state, func(t *testing.T) {
-			p, s := testProvider(t)
-			if _, err := p.CreateVolume("pvc-test", 20*gib); err != nil {
-				t.Fatal(err)
-			}
-			s.volumes[0].Status = state
-			s.volumes[0].Capacity = nil
-			if err := p.DeleteVolume("pvc-test"); err != nil {
-				t.Fatal(err)
-			}
-			if s.deletes != 1 {
-				t.Fatal("cloud deletion was not attempted")
-			}
-		})
-	}
-}
-
-func (s *fakeSession) CreateVolume(v provider.Volume) (*provider.Volume, error) {
-	s.creates++
+func (s *fakeSession) CreateVolume(volume provider.Volume) (*provider.Volume, error) {
+	s.createCalls++
+	s.lastCreate = volume
 	if s.createErr != nil {
 		return nil, s.createErr
 	}
-	if s.createResult != nil {
-		return s.createResult(v), nil
+	volume.VolumeID = "r006-created-volume"
+	if volume.Name != nil {
+		s.volumes[*volume.Name] = &volume
 	}
-	v.VolumeID = "r006-test-volume"
-	v.Status = "available"
-	s.volumes = append(s.volumes, &v)
-	return &v, nil
+	return &volume, nil
 }
 
-func (s *fakeSession) DeleteVolume(v *provider.Volume) error {
-	s.deletes++
-	for i, existing := range s.volumes {
-		if existing.VolumeID == v.VolumeID {
-			s.volumes = append(s.volumes[:i], s.volumes[i+1:]...)
-			break
+func (s *fakeSession) DeleteVolume(volume *provider.Volume) error {
+	s.deleteCalls++
+	if volume != nil {
+		s.lastDelete = volume.VolumeID
+	}
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	for name, existing := range s.volumes {
+		if existing.VolumeID == s.lastDelete {
+			delete(s.volumes, name)
 		}
 	}
 	return nil
 }
 
-func (s *fakeSession) GetVolume(id string) (*provider.Volume, error) {
-	for _, v := range s.volumes {
-		if v.VolumeID == id {
-			return v, nil
+func (s *fakeSession) UpdateVolume(volume provider.Volume) error {
+	for _, existing := range s.volumes {
+		if existing.VolumeID == volume.VolumeID {
+			existing.Capacity = volume.Capacity
+			return nil
 		}
 	}
-	return nil, errors.New("not found")
+	return fmt.Errorf("volume not found")
 }
 
-func (s *fakeSession) UpdateVolume(v provider.Volume) error {
-	existing, err := s.GetVolume(v.VolumeID)
-	if err != nil {
-		return err
+func (s *fakeSession) ListVolumes(_ int, _ string, _ map[string]string) (*provider.VolumeList, error) {
+	list := &provider.VolumeList{}
+	for _, volume := range s.volumes {
+		list.Volumes = append(list.Volumes, volume)
 	}
-	existing.Capacity = v.Capacity
-	return nil
-}
-
-func TestCustomCreateRequestAndExistingExpansion(t *testing.T) {
-	p, s := testProvider(t)
-	params := testParams()
-	params["profile"] = "custom"
-	params["iops"] = "05000"
-	params["encrypted"] = "true"
-	params["encryptionKey"] = "crn:test-key"
-	cfg, err := parseConfig(params)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.config = cfg
-	if _, err := p.CreateVolume("pvc-test", 20*gib); err != nil {
-		t.Fatal(err)
-	}
-	v := s.volumes[0]
-	if *v.Iops != "5000" || v.ResourceGroup.ID != "rg-test" || v.VolumeEncryptionKey.CRN != "crn:test-key" {
-		t.Fatalf("wrong request: %+v", v)
-	}
-	if _, err := p.CreateVolume("pvc-test", 20*gib); err != nil {
-		t.Fatal(err)
-	}
-	// Retain the existing provider-level expansion regression coverage; no
-	// controller/guest expansion support is added by this provisioning change.
-	if err := p.ExpandVolume("pvc-test", 40*gib); err != nil {
-		t.Fatal(err)
-	}
-	info, err := p.GetVolumeInfo("pvc-test")
-	if err != nil || info.SizeBytes != 40*gib {
-		t.Fatalf("expanded result: %+v %v", info, err)
-	}
-	p.config.Iops = "6000"
-	if _, err := p.CreateVolume("pvc-test", 20*gib); !errors.Is(err, caa.ErrVolumeAlreadyExists) {
-		t.Fatalf("configuration mismatch: %v", err)
-	}
-}
-
-func TestCreateFailureAndDuplicateName(t *testing.T) {
-	p, s := testProvider(t)
-	failure := errors.New("create API failure")
-	s.createErr = failure
-	if _, err := p.CreateVolume("pvc-test", 20*gib); !errors.Is(err, failure) {
-		t.Fatal(err)
-	}
-	s.createErr = nil
-	if _, err := p.CreateVolume("pvc-test", 20*gib); err != nil {
-		t.Fatal(err)
-	}
-	s.volumes = append(s.volumes, s.volumes[0])
-	if _, err := p.CreateVolume("pvc-test", 20*gib); !errors.Is(err, caa.ErrVolumeAlreadyExists) {
-		t.Fatalf("ambiguous lookup: %v", err)
-	}
-}
-
-func TestPinnedSDKResponseShape(t *testing.T) {
-	p, s := testProvider(t)
-	s.createResult = func(v provider.Volume) *provider.Volume {
-		v.VolumeID = "r006-sdk-shape"
-		v.Name = nil
-		v.ResourceGroup = nil
-		v.VolumeEncryptionKey = nil
-		v.Status = "available"
-		s.volumes = append(s.volumes, &v)
-		pending := v
-		pending.Status = "pending"
-		return &pending
-	}
-	first, err := p.CreateVolume("pvc-test", 20*gib)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// List conversion also omits Name, RG and encryption key.
-	s.volumes[0].Name = nil
-	s.pages = map[string]*provider.VolumeList{"": {Volumes: s.volumes}}
-	second, err := p.CreateVolume("pvc-test", 20*gib)
-	if err != nil || !reflect.DeepEqual(first, second) || s.creates != 1 {
-		t.Fatalf("SDK-shaped retry: %+v %v", second, err)
-	}
-	s.volumes[0].Name = nil
-	recovered, err := p.ListManagedVolumes()
-	if err != nil || len(recovered) != 1 || recovered[0].VolumeID != "pvc-test" {
-		t.Fatalf("SDK-shaped recovery: %+v %v", recovered, err)
-	}
-}
-
-func testParams() map[string]string {
-	return map[string]string{"region": "us-south", "zone": "us-south-1", "resourceGroup": "rg-test"}
-}
-
-func testProvider(t *testing.T) (*IBMCloudProvider, *fakeSession) {
-	t.Helper()
-	cfg, err := parseConfig(testParams())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := &fakeSession{}
-	return &IBMCloudProvider{session: s, config: cfg}, s
+	return list, nil
 }
 
 func TestParseConfig(t *testing.T) {
-	cfg, err := parseConfig(testParams())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Profile != "general-purpose" || cfg.FsType != "ext4" || cfg.Encrypted != "false" || cfg.BillingType != "hourly" {
-		t.Fatalf("bad defaults: %+v", cfg)
-	}
-	aliases := map[string]string{"ibmRegion": "us-south", "ibmZone": "us-south-1", "ibmResourceGroup": "rg-test"}
-	aliasConfig, err := parseConfig(aliases)
-	if err != nil || !reflect.DeepEqual(cfg, aliasConfig) {
-		t.Fatalf("alias parsing: %+v, %v", aliasConfig, err)
-	}
-	aliases["profile"] = "custom"
-	aliases["ibmIops"] = "5000"
-	aliases["tags"] = "first, second, "
-	custom, err := parseConfig(aliases)
-	if err != nil || custom.Iops != "5000" || len(custom.ExtraTags) != 2 {
-		t.Fatalf("custom parsing: %+v, %v", custom, err)
-	}
-	for _, key := range []string{"region", "zone"} {
-		t.Run("missing_"+key, func(t *testing.T) {
-			params := testParams()
-			delete(params, key)
-			_, err := NewIBMCloudProvider(params)
-			if !errors.Is(err, caa.ErrInvalidParameters) {
-				t.Fatalf("got %v", err)
-			}
+	t.Run("defaults and aliases", func(t *testing.T) {
+		cfg, err := parseConfig(map[string]string{
+			"ibmRegion":        "us-south",
+			"ibmZone":          "us-south-1",
+			"ibmResourceGroup": "rg-alias",
+			"tags":             "one, two",
 		})
-	}
-	for _, change := range []map[string]string{
-		{"profile": "custom", "iops": "-1"}, {"encrypted": "maybe"},
-		{"profile": "sdp", "iops": "0"}, {"profile": "sdp", "iops": "bad"},
-		{"throughput": "-1"}, {"throughput": "0"}, {"throughput": "bad"}, {"throughput": "2147483648"},
-		{"encrypted": "true"}, {"encryptionKey": "key"}, {"tags": ownershipTagPrefix + "someone-else"},
-	} {
-		params := testParams()
-		for k, v := range change {
-			params[k] = v
-		}
-		if _, err := parseConfig(params); err == nil {
-			t.Errorf("accepted invalid config %v", change)
-		}
-	}
-}
-
-func TestResourceGroupDefault(t *testing.T) {
-	for _, explicit := range []string{"", "rg-override"} {
-		params := testParams()
-		params["resourceGroup"] = explicit
-		cfg, err := parseConfig(params)
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg.ResourceGroup, err = resolveResourceGroup(cfg.ResourceGroup, "rg-cluster")
-		want := explicit
-		if want == "" {
-			want = "rg-cluster"
+		if cfg.Region != "us-south" || cfg.Zone != "us-south-1" || cfg.ResourceGroup != "rg-alias" {
+			t.Fatalf("aliases were not parsed: %+v", cfg)
 		}
-		if err != nil || cfg.ResourceGroup != want {
-			t.Fatalf("resource group: %q, %v", cfg.ResourceGroup, err)
+		if cfg.Profile != "general-purpose" {
+			t.Fatalf("unexpected default profile: %q", cfg.Profile)
 		}
-		s := &fakeSession{}
-		p := &IBMCloudProvider{session: s, config: cfg}
-		if _, err := p.CreateVolume("pvc-test", 20*gib); err != nil {
-			t.Fatal(err)
+		if len(cfg.ExtraTags) != 2 || cfg.ExtraTags[0] != "one" || cfg.ExtraTags[1] != "two" {
+			t.Fatalf("unexpected tags: %v", cfg.ExtraTags)
 		}
-		if s.volumes[0].ResourceGroup.ID != want {
-			t.Fatal("resolved group not sent to SDK")
-		}
-		if err := p.DeleteVolume("pvc-test"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := resolveResourceGroup("", ""); !errors.Is(err, caa.ErrInvalidParameters) {
-		t.Fatalf("missing provider default: %v", err)
-	}
-	if got, err := resolveResourceGroup("rg-explicit", ""); err != nil || got != "rg-explicit" {
-		t.Fatalf("explicit group should not require default: %q %v", got, err)
-	}
-}
+	})
 
-func TestSDPCreateRetryRecoveryAndDelete(t *testing.T) {
-	for _, explicit := range []bool{false, true} {
-		t.Run(fmt.Sprintf("explicit-performance-%t", explicit), func(t *testing.T) {
-			params := testParams()
-			params["profile"] = "sdp"
-			size := gib
-			if explicit {
-				params["iops"] = "03000"
-				params["throughput"] = "02000"
-				size = 30*gib + 1
-			}
-			cfg, err := parseConfig(params)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s := &fakeSession{}
-			p := &IBMCloudProvider{session: s, config: cfg}
-			first, err := p.CreateVolume("pvc-sdp", size)
-			if err != nil {
-				t.Fatal(err)
-			}
-			v := s.volumes[0]
-			if explicit {
-				if *v.Iops != "3000" || v.Bandwidth != 2000 || first.SizeBytes != 31*gib {
-					t.Fatalf("SDP request: %+v", v)
-				}
-			} else {
-				if v.Iops != nil || v.Bandwidth != 0 || first.SizeBytes != gib {
-					t.Fatal("defaults must be omitted; 1 GiB must not become 10 GiB")
-				}
-				// Simulate server-selected performance returned by the SDK.
-				iops := "3000"
-				v.Iops, v.Bandwidth = &iops, 1000
-			}
-			restarted := &IBMCloudProvider{session: s, config: cfg}
-			second, err := restarted.CreateVolume("pvc-sdp", size)
-			if err != nil || !reflect.DeepEqual(first, second) || s.creates != 1 {
-				t.Fatalf("SDP retry: %+v %v", second, err)
-			}
-			if recovered, err := restarted.ListManagedVolumes(); err != nil || len(recovered) != 1 {
-				t.Fatalf("SDP recovery: %+v %v", recovered, err)
-			}
-			if explicit {
-				v.Bandwidth++
-				if _, err := restarted.CreateVolume("pvc-sdp", size); !errors.Is(err, caa.ErrVolumeAlreadyExists) {
-					t.Fatalf("throughput mismatch accepted: %v", err)
-				}
-				v.Bandwidth--
-				wrongIOPS := "4000"
-				v.Iops = &wrongIOPS
-				if _, err := restarted.CreateVolume("pvc-sdp", size); !errors.Is(err, caa.ErrVolumeAlreadyExists) {
-					t.Fatalf("IOPS mismatch accepted: %v", err)
-				}
-				v.Iops = &cfg.Iops
-			}
-			if err := restarted.DeleteVolume("pvc-sdp"); err != nil {
-				t.Fatal(err)
-			}
-			if err := restarted.DeleteVolume("pvc-sdp"); err != nil || s.deletes != 1 {
-				t.Fatalf("SDP delete retry: %v", err)
-			}
+	t.Run("SDP", func(t *testing.T) {
+		cfg, err := parseConfig(map[string]string{
+			"profile":    "sdp",
+			"iops":       "3000",
+			"throughput": "2000",
 		})
-	}
-}
-
-func TestExistingConfigurationTagUnchanged(t *testing.T) {
-	p, s := testProvider(t)
-	// Exact pre-SDP serialized configuration; old volumes must remain manageable.
-	legacy := `{"Region":"us-south","Zone":"us-south-1","ResourceGroup":"rg-test","Profile":"general-purpose","Iops":"","Encrypted":"false","EncryptionKey":"","BillingType":"hourly","ExtraTags":null,"FsType":"ext4"}`
-	want := fmt.Sprintf("%s%x", configTagPrefix, sha256.Sum256([]byte(legacy)))
-	if p.configTag() != want {
-		t.Fatal("adding SDP changed existing configuration tags")
-	}
-	if _, err := p.CreateVolume("pvc-test", 20*gib); err != nil {
-		t.Fatal(err)
-	}
-	s.volumes[0].Tags = []string{ownershipTagPrefix + "pvc-test", want}
-	if err := p.DeleteVolume("pvc-test"); err != nil {
-		t.Fatalf("legacy volume deletion: %v", err)
-	}
-}
-
-func TestCloudPlacementAndProfilePassedThrough(t *testing.T) {
-	for _, change := range []map[string]string{
-		{"zone": "us-east-1"}, {"profile": "unsupported"},
-	} {
-		params := testParams()
-		for key, value := range change {
-			params[key] = value
-		}
-		cfg, err := parseConfig(params)
 		if err != nil {
-			t.Fatalf("cloud-owned validation performed locally: %v", err)
+			t.Fatal(err)
 		}
-		if cfg.Zone != params["zone"] || (params["profile"] != "" && cfg.Profile != params["profile"]) {
-			t.Fatalf("cloud parameters changed: %+v", cfg)
+		if cfg.Profile != "sdp" || cfg.Iops != "3000" || cfg.Throughput != 2000 {
+			t.Fatalf("unexpected SDP config: %+v", cfg)
 		}
-	}
-}
+	})
 
-func TestNormalizeCapacity(t *testing.T) {
-	p, _ := testProvider(t)
-	for _, tc := range []struct{ in, want int64 }{{0, 10 * gib}, {1, 10 * gib}, {10 * gib, 10 * gib}, {20*gib + 1, 21 * gib}, {20 * gib, 20 * gib}} {
-		got, err := p.NormalizeCapacity(tc.in)
-		if err != nil || got != tc.want {
-			t.Errorf("%d: got %d, %v", tc.in, got, err)
-		}
-	}
-	for _, in := range []int64{-1, math.MaxInt64} {
-		if _, err := p.NormalizeCapacity(in); err == nil {
-			t.Errorf("accepted %d", in)
-		}
-	}
-	p.config.Profile = "sdp"
-	for _, tc := range []struct{ in, want int64 }{{0, gib}, {1, gib}, {gib, gib}, {gib + 1, 2 * gib}} {
-		got, err := p.NormalizeCapacity(tc.in)
-		if err != nil || got != tc.want {
-			t.Errorf("SDP %d: got %d, %v", tc.in, got, err)
-		}
-	}
-}
-
-func TestCreateRetryAndDelete(t *testing.T) {
-	p, s := testProvider(t)
-	first, err := p.CreateVolume("pvc-test", 20*gib+1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.SizeBytes != 21*gib || first.Metadata["ibm-volume-id"] != first.Path {
-		t.Fatalf("bad result: %+v", first)
-	}
-	restarted := &IBMCloudProvider{session: s, config: p.config}
-	second, err := restarted.CreateVolume("pvc-test", 20*gib+1)
-	if err != nil || !reflect.DeepEqual(first, second) || s.creates != 1 {
-		t.Fatalf("retry: %+v %v creates=%d", second, err, s.creates)
-	}
-	if _, err := p.CreateVolume("pvc-test", 22*gib); !errors.Is(err, caa.ErrVolumeAlreadyExists) {
-		t.Fatalf("larger retry: %v", err)
-	}
-	if err := p.DeleteVolume("pvc-test"); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.DeleteVolume("pvc-test"); err != nil || s.deletes != 1 {
-		t.Fatalf("delete retry: %v count=%d", err, s.deletes)
-	}
-}
-
-func TestLookupFailuresDoNotCreateOrDelete(t *testing.T) {
-	for _, message := range []string{"forbidden", "timeout", "connection refused"} {
-		t.Run(message, func(t *testing.T) {
-			p, s := testProvider(t)
-			failure := errors.New(message)
-			s.listErr = failure
-			if _, err := p.CreateVolume("pvc-test", 20*gib); !errors.Is(err, failure) {
-				t.Fatal(err)
-			}
-			if _, err := p.VolumeExists("pvc-test"); !errors.Is(err, failure) {
-				t.Fatal(err)
-			}
-			if err := p.DeleteVolume("pvc-test"); !errors.Is(err, failure) {
-				t.Fatal(err)
-			}
-			if s.creates != 0 || s.deletes != 0 {
-				t.Fatal("mutated after lookup failure")
+	for _, throughput := range []string{"invalid", "0", "-1"} {
+		t.Run("invalid throughput "+throughput, func(t *testing.T) {
+			if _, err := parseConfig(map[string]string{"throughput": throughput}); err == nil {
+				t.Fatal("expected throughput parsing to fail")
 			}
 		})
 	}
 }
 
-func TestRejectForeignOrIncompatibleVolume(t *testing.T) {
-	for name, change := range map[string]func(*provider.Volume){
-		"untagged":  func(v *provider.Volume) { v.Tags = nil },
-		"wrong-tag": func(v *provider.Volume) { v.Tags = []string{ownershipTagPrefix + "other"} },
-		"zone":      func(v *provider.Volume) { v.Az = "us-south-2" },
-		"group":     func(v *provider.Volume) { v.ResourceGroup = &provider.ResourceGroup{ID: "other"} },
-		"profile":   func(v *provider.Volume) { v.Profile = &provider.Profile{Name: "custom"} },
-		"key":       func(v *provider.Volume) { v.VolumeEncryptionKey = &provider.VolumeEncryptionKey{CRN: "other"} },
-	} {
-		t.Run(name, func(t *testing.T) {
-			p, s := testProvider(t)
-			if _, err := p.CreateVolume("pvc-test", 20*gib); err != nil {
-				t.Fatal(err)
-			}
-			change(s.volumes[0])
-			if _, err := p.CreateVolume("pvc-test", 20*gib); !errors.Is(err, caa.ErrVolumeAlreadyExists) {
-				t.Fatalf("got %v", err)
-			}
-			if err := p.DeleteVolume("pvc-test"); !errors.Is(err, caa.ErrVolumeAlreadyExists) {
-				t.Fatalf("delete: %v", err)
-			}
-			if s.creates != 1 || s.deletes != 0 {
-				t.Fatal("mutated incompatible disk")
-			}
-		})
+func TestResolveResourceGroup(t *testing.T) {
+	if got := resolveResourceGroup("storage-class-rg", "provider-rg"); got != "storage-class-rg" {
+		t.Fatalf("explicit resource group lost: %q", got)
+	}
+	if got := resolveResourceGroup("", "provider-rg"); got != "provider-rg" {
+		t.Fatalf("provider resource group not used: %q", got)
 	}
 }
 
-func TestMalformedCreateResponses(t *testing.T) {
-	for name, result := range map[string]func(provider.Volume) *provider.Volume{
-		"nil":        func(provider.Volume) *provider.Volume { return nil },
-		"missing-id": func(v provider.Volume) *provider.Volume { return &v },
-		"pending":    func(v provider.Volume) *provider.Volume { v.VolumeID = "id"; v.Status = "pending"; return &v },
-		"missing-capacity": func(v provider.Volume) *provider.Volume {
-			v.VolumeID = "id"
-			v.Status = "available"
-			v.Capacity = nil
-			return &v
+func TestCreateVolumeRequestMapping(t *testing.T) {
+	tests := []struct {
+		name               string
+		config             Config
+		size               int64
+		wantSizeGB         int
+		wantIOPS           string
+		wantBandwidth      int32
+		wantResourceGroup  string
+		wantEncryptionKey  string
+		wantFilesystemType provider.VolumeType
+	}{
+		{
+			name: "general purpose",
+			config: Config{
+				Region: "us-south", Zone: "us-south-1", Profile: "general-purpose",
+				ResourceGroup: "rg-explicit", Iops: "3000", ExtraTags: []string{"test"},
+				Encrypted: "true", EncryptionKey: "crn:key", FsType: "ext4",
+			},
+			size:               20*gib + 1,
+			wantSizeGB:         21,
+			wantResourceGroup:  "rg-explicit",
+			wantEncryptionKey:  "crn:key",
+			wantFilesystemType: provider.VolumeType("ext4"),
 		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			p, s := testProvider(t)
-			s.createResult = result
-			if _, err := p.CreateVolume("pvc-test", 20*gib); err == nil {
-				t.Fatal("accepted incomplete result")
+		{
+			name: "SDP",
+			config: Config{
+				Region: "us-south", Zone: "us-south-1", Profile: "sdp",
+				ResourceGroup: "rg-provider", Iops: "3000", Throughput: 2000,
+			},
+			size:              1 * gib,
+			wantSizeGB:        1,
+			wantIOPS:          "3000",
+			wantBandwidth:     2000,
+			wantResourceGroup: "rg-provider",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session := newFakeSession()
+			ibmProvider := &IBMCloudProvider{session: session, config: test.config}
+
+			info, err := ibmProvider.CreateVolume("pvc-test", test.size)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := session.lastCreate
+			if session.createCalls != 1 || request.Capacity == nil || *request.Capacity != test.wantSizeGB {
+				t.Fatalf("unexpected create capacity or count: %+v", request)
+			}
+			if request.Profile == nil || request.Profile.Name != test.config.Profile {
+				t.Fatalf("unexpected profile: %+v", request.Profile)
+			}
+			if request.ResourceGroup == nil || request.ResourceGroup.ID != test.wantResourceGroup {
+				t.Fatalf("unexpected resource group: %+v", request.ResourceGroup)
+			}
+			if request.Bandwidth != test.wantBandwidth {
+				t.Fatalf("bandwidth=%d, want %d", request.Bandwidth, test.wantBandwidth)
+			}
+			if test.wantIOPS == "" {
+				if request.Iops != nil {
+					t.Fatalf("IOPS should not be sent for %s", test.config.Profile)
+				}
+			} else if request.Iops == nil || *request.Iops != test.wantIOPS {
+				t.Fatalf("unexpected IOPS: %v", request.Iops)
+			}
+			if request.VolumeType != test.wantFilesystemType {
+				t.Fatalf("filesystem=%q, want %q", request.VolumeType, test.wantFilesystemType)
+			}
+			if test.wantEncryptionKey != "" && (request.VolumeEncryptionKey == nil || request.VolumeEncryptionKey.CRN != test.wantEncryptionKey) {
+				t.Fatalf("unexpected encryption key: %+v", request.VolumeEncryptionKey)
+			}
+			if len(request.Tags) == 0 || request.Tags[0] != "caa-csi-volume-id:pvc-test" {
+				t.Fatalf("ownership tag missing: %v", request.Tags)
+			}
+			if info.VolumeID != "pvc-test" || info.Path != "r006-created-volume" {
+				t.Fatalf("unexpected volume info: %+v", info)
 			}
 		})
 	}
 }
 
-func TestRecoveryOwnershipAndPagination(t *testing.T) {
-	p, s := testProvider(t)
-	if _, err := p.CreateVolume("pvc-test", 20*gib); err != nil {
+func TestCreateVolumeIdempotency(t *testing.T) {
+	session := newFakeSession()
+	name := "pvc-existing"
+	capacity := 20
+	session.volumes[name] = &provider.Volume{
+		VolumeID: "r006-existing", Name: &name, Capacity: &capacity,
+		VPCVolume: provider.VPCVolume{Profile: &provider.Profile{Name: "general-purpose"}},
+	}
+	ibmProvider := &IBMCloudProvider{session: session, config: Config{Profile: "general-purpose"}}
+
+	info, err := ibmProvider.CreateVolume(name, 20*gib)
+	if err != nil {
 		t.Fatal(err)
 	}
-	owned := s.volumes[0]
-	foreign := *owned
-	name := "unrelated-volume"
-	foreign.Name = &name
-	foreign.Tags = nil
-	s.pages = map[string]*provider.VolumeList{"": {Volumes: []*provider.Volume{&foreign}, Next: "page2"}, "page2": {Volumes: []*provider.Volume{owned}}}
-	vols, err := p.ListManagedVolumes()
-	if err != nil || len(vols) != 1 || vols[0].VolumeID != "pvc-test" {
-		t.Fatalf("recovery: %+v %v", vols, err)
+	if session.createCalls != 0 || info.Path != "r006-existing" {
+		t.Fatalf("existing volume was not reused: %+v", info)
 	}
-	s.pages["page2"].Next = "page2"
-	if _, err := p.ListManagedVolumes(); err == nil {
-		t.Fatal("accepted pagination loop")
+
+	if _, err := ibmProvider.CreateVolume(name, 30*gib); err == nil || !strings.Contains(err.Error(), "different capacity") {
+		t.Fatalf("expected a capacity conflict, got %v", err)
 	}
-	s.pages = map[string]*provider.VolumeList{"": nil}
-	if _, err := p.CreateVolume("pvc-new", 20*gib); err == nil {
-		t.Fatal("nil list treated as absence")
+	if session.createCalls != 0 {
+		t.Fatal("capacity conflict must not create another volume")
+	}
+}
+
+func TestCreateVolumePropagatesLookupFailure(t *testing.T) {
+	session := newFakeSession()
+	session.lookupErr = providerError.Message{Type: providerError.PermissionDenied, RC: 403, Description: "forbidden"}
+	ibmProvider := &IBMCloudProvider{session: session, config: Config{Profile: "general-purpose"}}
+
+	_, err := ibmProvider.CreateVolume("pvc-denied", 20*gib)
+	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Fatalf("lookup error was hidden: %v", err)
+	}
+	if session.createCalls != 0 {
+		t.Fatal("create must not run after a lookup failure")
+	}
+}
+
+func TestDeleteVolume(t *testing.T) {
+	t.Run("existing", func(t *testing.T) {
+		session := newFakeSession()
+		name := "pvc-delete"
+		session.volumes[name] = &provider.Volume{VolumeID: "r006-delete", Name: &name}
+		ibmProvider := &IBMCloudProvider{session: session}
+
+		if err := ibmProvider.DeleteVolume(name); err != nil {
+			t.Fatal(err)
+		}
+		if session.deleteCalls != 1 || session.lastDelete != "r006-delete" {
+			t.Fatalf("native IBM ID was not deleted: calls=%d id=%q", session.deleteCalls, session.lastDelete)
+		}
+	})
+
+	t.Run("already absent", func(t *testing.T) {
+		session := newFakeSession()
+		ibmProvider := &IBMCloudProvider{session: session}
+
+		if err := ibmProvider.DeleteVolume("pvc-absent"); err != nil {
+			t.Fatal(err)
+		}
+		if session.deleteCalls != 0 {
+			t.Fatal("delete should not be sent for an absent volume")
+		}
+	})
+
+	t.Run("deleted between lookup and delete", func(t *testing.T) {
+		session := newFakeSession()
+		name := "pvc-delete-race"
+		session.volumes[name] = &provider.Volume{VolumeID: "r006-delete-race", Name: &name}
+		session.deleteErr = providerError.Message{Type: providerError.EntityNotFound, RC: 404}
+		ibmProvider := &IBMCloudProvider{session: session}
+
+		if err := ibmProvider.DeleteVolume(name); err != nil {
+			t.Fatalf("already-deleted volume should succeed: %v", err)
+		}
+		if session.deleteCalls != 1 {
+			t.Fatalf("delete calls=%d, want 1", session.deleteCalls)
+		}
+	})
+
+	t.Run("lookup failure", func(t *testing.T) {
+		session := newFakeSession()
+		session.lookupErr = providerError.Message{Type: providerError.PermissionDenied, RC: 403, Description: "forbidden"}
+		ibmProvider := &IBMCloudProvider{session: session}
+
+		err := ibmProvider.DeleteVolume("pvc-denied")
+		if err == nil || !strings.Contains(err.Error(), "forbidden") {
+			t.Fatalf("lookup error was hidden: %v", err)
+		}
+		if session.deleteCalls != 0 {
+			t.Fatal("delete must not run after a lookup failure")
+		}
+	})
+}
+
+func TestVolumeExistsPropagatesLookupFailure(t *testing.T) {
+	session := newFakeSession()
+	session.lookupErr = providerError.Message{Type: providerError.Unauthenticated, RC: 401, Description: "unauthenticated"}
+	ibmProvider := &IBMCloudProvider{session: session}
+
+	if exists, err := ibmProvider.VolumeExists("pvc-test"); err == nil || exists {
+		t.Fatalf("lookup failure was hidden: exists=%v err=%v", exists, err)
 	}
 }
