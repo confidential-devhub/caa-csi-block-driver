@@ -135,25 +135,28 @@ func parseConfig(params map[string]string) (Config, error) {
 	if cfg.Region == "" || cfg.Zone == "" {
 		return Config{}, fmt.Errorf("region and zone must be explicitly configured")
 	}
-	if cfg.Region == "" || cfg.Zone == "" || cfg.ResourceGroup == "" {
-		return Config{}, fmt.Errorf("region, zone and resourceGroup must be explicitly configured")
+	if cfg.Region == "" || cfg.Zone == "" {
+		return Config{}, fmt.Errorf("region and zone must be explicitly configured")
 	}
-	if !strings.HasPrefix(cfg.Zone, cfg.Region+"-") {
-		return Config{}, fmt.Errorf("zone %q is not in region %q", cfg.Zone, cfg.Region)
+	// The VPC API validates profile availability and zone placement.
+	// Like the upstream driver, ignore IOPS for tiered profiles.
+	if cfg.Profile != "custom" && cfg.Profile != "sdp" {
+		cfg.Iops = ""
 	}
-	switch cfg.Profile {
-	case "general-purpose", "5iops-tier", "10iops-tier", "custom":
-	default:
-		return Config{}, fmt.Errorf("unsupported profile %q for this provisioning implementation", cfg.Profile)
-	}
-	if cfg.Profile == "custom" {
-		iops, err := strconv.Atoi(cfg.Iops)
+	if cfg.Iops != "" {
+		iops, err := strconv.ParseInt(cfg.Iops, 10, 64)
 		if err != nil || iops <= 0 {
-			return Config{}, fmt.Errorf("custom profile requires positive iops")
+			return Config{}, fmt.Errorf("iops must be a positive integer")
 		}
-		cfg.Iops = strconv.Itoa(iops)
-	} else if cfg.Iops != "" {
-		return Config{}, fmt.Errorf("iops is only supported with the custom profile")
+		cfg.Iops = strconv.FormatInt(iops, 10)
+	}
+	// Match the upstream StorageClass key and SDK bandwidth units (Mbps).
+	if value := params["throughput"]; value != "" {
+		bandwidth, err := strconv.ParseInt(value, 10, 32)
+		if err != nil || bandwidth <= 0 {
+			return Config{}, fmt.Errorf("throughput must be a positive int32 (Mbps)")
+		}
+		cfg.Throughput = int32(bandwidth)
 	}
 	if cfg.BillingType == "" {
 		cfg.BillingType = "hourly"

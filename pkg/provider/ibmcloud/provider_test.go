@@ -6,6 +6,7 @@ package ibmcloud
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -274,7 +275,7 @@ func TestParseConfig(t *testing.T) {
 	if err != nil || custom.Iops != "5000" || len(custom.ExtraTags) != 2 {
 		t.Fatalf("custom parsing: %+v, %v", custom, err)
 	}
-	for _, key := range []string{"region", "zone", "resourceGroup"} {
+	for _, key := range []string{"region", "zone"} {
 		t.Run("missing_"+key, func(t *testing.T) {
 			params := testParams()
 			delete(params, key)
@@ -285,8 +286,9 @@ func TestParseConfig(t *testing.T) {
 		})
 	}
 	for _, change := range []map[string]string{
-		{"zone": "us-east-1"}, {"profile": "unsupported"}, {"profile": "custom"},
-		{"profile": "custom", "iops": "-1"}, {"iops": "5000"}, {"encrypted": "maybe"},
+		{"profile": "custom", "iops": "-1"}, {"encrypted": "maybe"},
+		{"profile": "sdp", "iops": "0"}, {"profile": "sdp", "iops": "bad"},
+		{"throughput": "-1"}, {"throughput": "0"}, {"throughput": "bad"}, {"throughput": "2147483648"},
 		{"encrypted": "true"}, {"encryptionKey": "key"}, {"tags": ownershipTagPrefix + "someone-else"},
 	} {
 		params := testParams()
@@ -324,6 +326,13 @@ func TestNormalizeCapacity(t *testing.T) {
 	for _, in := range []int64{-1, math.MaxInt64} {
 		if _, err := p.NormalizeCapacity(in); err == nil {
 			t.Errorf("accepted %d", in)
+		}
+	}
+	p.config.Profile = "sdp"
+	for _, tc := range []struct{ in, want int64 }{{0, gib}, {1, gib}, {gib, gib}, {gib + 1, 2 * gib}} {
+		got, err := p.NormalizeCapacity(tc.in)
+		if err != nil || got != tc.want {
+			t.Errorf("SDP %d: got %d, %v", tc.in, got, err)
 		}
 	}
 }
