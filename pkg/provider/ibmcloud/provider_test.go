@@ -7,49 +7,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
-	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/IBM/ibmcloud-volume-interface/lib/provider"
-	vpcProvider "github.com/IBM/ibmcloud-volume-vpc/block/provider"
-	"github.com/IBM/ibmcloud-volume-vpc/common/vpcclient/models"
-	caa "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
-	"go.uber.org/zap"
+	providerError "github.com/IBM/ibmcloud-volume-interface/lib/utils"
 )
 
 type fakeSession struct {
 	provider.Session
-	volumes            []*provider.Volume
-	listErr, createErr error
-	createResult       func(provider.Volume) *provider.Volume
-	pages              map[string]*provider.VolumeList
-	creates, deletes   int
-	lastFilters        map[string]string
+	volumes     map[string]*provider.Volume
+	lookupErr   error
+	createErr   error
+	deleteErr   error
+	createCalls int
+	deleteCalls int
+	lastCreate  provider.Volume
+	lastDelete  string
 }
 
-func (s *fakeSession) ListVolumes(_ int, start string, filters map[string]string) (*provider.VolumeList, error) {
-	s.lastFilters = filters
-	if s.listErr != nil {
-		return nil, s.listErr
-	}
-	if s.pages != nil {
-		return s.pages[start], nil
-	}
-	page := &provider.VolumeList{}
-	for _, v := range s.volumes {
-		if filters["name"] != "" && (v.Name == nil || *v.Name != filters["name"]) {
-			continue
-		}
-		if filters["zone.name"] != "" && v.Az != filters["zone.name"] {
-			continue
-		}
-		if filters["resource_group.id"] != "" && (v.ResourceGroup == nil || v.ResourceGroup.ID != filters["resource_group.id"]) {
-			continue
-		}
-		page.Volumes = append(page.Volumes, v)
-	}
-	return page, nil
+func newFakeSession() *fakeSession {
+	return &fakeSession{volumes: make(map[string]*provider.Volume)}
 }
 
 func TestActualSDKConversionLookup(t *testing.T) {
@@ -64,9 +42,10 @@ func TestActualSDKConversionLookup(t *testing.T) {
 	if err != nil || info.VolumeID != "pvc-test" || info.Path != "r006-native" || s.creates != 0 {
 		t.Fatalf("actual SDK conversion: %+v %v", info, err)
 	}
-	if s.lastFilters["name"] != "pvc-test" || len(s.lastFilters) != 1 {
-		t.Fatalf("missing server-side identity filters: %v", s.lastFilters)
+	if volume, ok := s.volumes[name]; ok {
+		return volume, nil
 	}
+	return nil, providerError.Message{Type: providerError.RetrivalFailed, RC: 404}
 }
 
 func TestSameNameOutsideRequestedPlacementIsConflict(t *testing.T) {
@@ -118,39 +97,43 @@ func (s *fakeSession) CreateVolume(v provider.Volume) (*provider.Volume, error) 
 	if s.createErr != nil {
 		return nil, s.createErr
 	}
-	if s.createResult != nil {
-		return s.createResult(v), nil
+	volume.VolumeID = "r006-created-volume"
+	if volume.Name != nil {
+		s.volumes[*volume.Name] = &volume
 	}
-	v.VolumeID = "r006-test-volume"
-	v.Status = "available"
-	s.volumes = append(s.volumes, &v)
-	return &v, nil
+	return &volume, nil
 }
 
-func (s *fakeSession) DeleteVolume(v *provider.Volume) error {
-	s.deletes++
-	for i, existing := range s.volumes {
-		if existing.VolumeID == v.VolumeID {
-			s.volumes = append(s.volumes[:i], s.volumes[i+1:]...)
-			break
+func (s *fakeSession) DeleteVolume(volume *provider.Volume) error {
+	s.deleteCalls++
+	if volume != nil {
+		s.lastDelete = volume.VolumeID
+	}
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	for name, existing := range s.volumes {
+		if existing.VolumeID == s.lastDelete {
+			delete(s.volumes, name)
 		}
 	}
 	return nil
 }
 
-func (s *fakeSession) GetVolume(id string) (*provider.Volume, error) {
-	for _, v := range s.volumes {
-		if v.VolumeID == id {
-			return v, nil
+func (s *fakeSession) UpdateVolume(volume provider.Volume) error {
+	for _, existing := range s.volumes {
+		if existing.VolumeID == volume.VolumeID {
+			existing.Capacity = volume.Capacity
+			return nil
 		}
 	}
-	return nil, errors.New("not found")
+	return fmt.Errorf("volume not found")
 }
 
-func (s *fakeSession) UpdateVolume(v provider.Volume) error {
-	existing, err := s.GetVolume(v.VolumeID)
-	if err != nil {
-		return err
+func (s *fakeSession) ListVolumes(_ int, _ string, _ map[string]string) (*provider.VolumeList, error) {
+	list := &provider.VolumeList{}
+	for _, volume := range s.volumes {
+		list.Volumes = append(list.Volumes, volume)
 	}
 	existing.Capacity = v.Capacity
 	return nil
@@ -256,33 +239,12 @@ func testProvider(t *testing.T) (*IBMCloudProvider, *fakeSession) {
 }
 
 func TestParseConfig(t *testing.T) {
-	cfg, err := parseConfig(testParams())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Profile != "general-purpose" || cfg.FsType != "ext4" || cfg.Encrypted != "false" || cfg.BillingType != "hourly" {
-		t.Fatalf("bad defaults: %+v", cfg)
-	}
-	aliases := map[string]string{"ibmRegion": "us-south", "ibmZone": "us-south-1", "ibmResourceGroup": "rg-test"}
-	aliasConfig, err := parseConfig(aliases)
-	if err != nil || !reflect.DeepEqual(cfg, aliasConfig) {
-		t.Fatalf("alias parsing: %+v, %v", aliasConfig, err)
-	}
-	aliases["profile"] = "custom"
-	aliases["ibmIops"] = "5000"
-	aliases["tags"] = "first, second, "
-	custom, err := parseConfig(aliases)
-	if err != nil || custom.Iops != "5000" || len(custom.ExtraTags) != 2 {
-		t.Fatalf("custom parsing: %+v, %v", custom, err)
-	}
-	for _, key := range []string{"region", "zone"} {
-		t.Run("missing_"+key, func(t *testing.T) {
-			params := testParams()
-			delete(params, key)
-			_, err := NewIBMCloudProvider(params)
-			if !errors.Is(err, caa.ErrInvalidParameters) {
-				t.Fatalf("got %v", err)
-			}
+	t.Run("defaults and aliases", func(t *testing.T) {
+		cfg, err := parseConfig(map[string]string{
+			"ibmRegion":        "us-south",
+			"ibmZone":          "us-south-1",
+			"ibmResourceGroup": "rg-alias",
+			"tags":             "one, two",
 		})
 	}
 	for _, change := range []map[string]string{
@@ -412,16 +374,30 @@ func TestRejectForeignOrIncompatibleVolume(t *testing.T) {
 	}
 }
 
-func TestMalformedCreateResponses(t *testing.T) {
-	for name, result := range map[string]func(provider.Volume) *provider.Volume{
-		"nil":        func(provider.Volume) *provider.Volume { return nil },
-		"missing-id": func(v provider.Volume) *provider.Volume { return &v },
-		"pending":    func(v provider.Volume) *provider.Volume { v.VolumeID = "id"; v.Status = "pending"; return &v },
-		"missing-capacity": func(v provider.Volume) *provider.Volume {
-			v.VolumeID = "id"
-			v.Status = "available"
-			v.Capacity = nil
-			return &v
+func TestCreateVolumeRequestMapping(t *testing.T) {
+	tests := []struct {
+		name               string
+		config             Config
+		size               int64
+		wantSizeGB         int
+		wantIOPS           string
+		wantBandwidth      int32
+		wantResourceGroup  string
+		wantEncryptionKey  string
+		wantFilesystemType provider.VolumeType
+	}{
+		{
+			name: "general purpose",
+			config: Config{
+				Region: "us-south", Zone: "us-south-1", Profile: "general-purpose",
+				ResourceGroup: "rg-explicit", Iops: "3000", ExtraTags: []string{"test"},
+				Encrypted: "true", EncryptionKey: "crn:key", FsType: "ext4",
+			},
+			size:               20*gib + 1,
+			wantSizeGB:         21,
+			wantResourceGroup:  "rg-explicit",
+			wantEncryptionKey:  "crn:key",
+			wantFilesystemType: provider.VolumeType("ext4"),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

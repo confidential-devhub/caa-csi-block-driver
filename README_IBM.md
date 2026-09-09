@@ -149,16 +149,34 @@ spec:
     requests:
       storage: 10Gi # Minimum supported VPC Block size for non-SDP profiles
   storageClassName: caa-csi-ibmcloud
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ibmcloud-test-pod
+  namespace: default
+spec:
+  runtimeClassName: kata-remote # Targets the PodVM / PeerPod runtime
+  containers:
+  - name: app
+    image: busybox
+    command: ["sh", "-c", "echo 'Hello from IBM Cloud' > /data/test.txt && sleep 3600"]
+    volumeMounts:
+    - name: data-vol
+      mountPath: /data
+  volumes:
+  - name: data-vol
+    persistentVolumeClaim:
+      claimName: ibmcloud-test-pvc
 ```
 
-Create the volume and verify that the claim becomes `Bound`:
+Apply the configuration:
 
 ```bash
-kubectl apply -f test-pvc.yaml
-kubectl get pvc ibmcloud-test-pvc -w
+kubectl apply -f test-pvc-pod.yaml
 ```
 
-Check the driver logs if provisioning fails:
+Check the status of the volume and pod:
 
 ```bash
 # Verify the PVC status goes to 'Bound'

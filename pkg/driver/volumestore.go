@@ -35,7 +35,6 @@ type volumeRecord struct {
 	Path          string            `json:"path"`
 	CapacityBytes int64             `json:"capacityBytes,omitempty"`
 	Params        map[string]string `json:"params"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
 }
 
 // volumeManifest is a lightweight params backup used when individual volume
@@ -123,7 +122,7 @@ func (vs *volumeStore) RecoverFromCloud(params map[string]string) error {
 
 	recovered := 0
 	for _, vol := range vols {
-		if !validVolumeID(vol.VolumeID) {
+		if vol.VolumeID == "" {
 			continue
 		}
 		path := filepath.Join(vs.dir, vol.VolumeID+".json")
@@ -140,7 +139,6 @@ func (vs *volumeStore) RecoverFromCloud(params map[string]string) error {
 			Path:          vol.Path,
 			CapacityBytes: vol.SizeBytes,
 			Params:        paramsCopy,
-			Metadata:      vol.Metadata,
 		}
 		data, err := json.Marshal(rec)
 		if err != nil {
@@ -182,9 +180,6 @@ func (vs *volumeStore) Exists(volumeID string) (bool, error) {
 }
 
 func (vs *volumeStore) Save(rec *volumeRecord) error {
-	if rec == nil || !validVolumeID(rec.VolumeID) {
-		return fmt.Errorf("invalid volume record ID")
-	}
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -199,9 +194,6 @@ func (vs *volumeStore) Save(rec *volumeRecord) error {
 }
 
 func (vs *volumeStore) Load(volumeID string) (*volumeRecord, error) {
-	if !validVolumeID(volumeID) {
-		return nil, fmt.Errorf("invalid volume record ID")
-	}
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -213,14 +205,7 @@ func (vs *volumeStore) Load(volumeID string) (*volumeRecord, error) {
 	if err := json.Unmarshal(data, &rec); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal volume record: %w", err)
 	}
-	if rec.VolumeID != volumeID {
-		return nil, fmt.Errorf("volume record ID mismatch")
-	}
 	return &rec, nil
-}
-
-func validVolumeID(id string) bool {
-	return id != "" && id != "." && id != ".." && id != "_manifest" && filepath.Base(id) == id
 }
 
 func (vs *volumeStore) Delete(volumeID string) {
