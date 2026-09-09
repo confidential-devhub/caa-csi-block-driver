@@ -147,7 +147,7 @@ func (vs *volumeStore) RecoverFromCloud(params map[string]string) error {
 			vsLogger.Printf("failed to marshal recovered volume %s: %v", vol.VolumeID, err)
 			continue
 		}
-		if err := atomicWriteFile(path, data); err != nil {
+		if err := os.WriteFile(path, data, 0600); err != nil {
 			vsLogger.Printf("failed to write recovered volume %s: %v", vol.VolumeID, err)
 			continue
 		}
@@ -192,7 +192,7 @@ func (vs *volumeStore) Save(rec *volumeRecord) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal volume record: %w", err)
 	}
-	if err := atomicWriteFile(filepath.Join(vs.dir, rec.VolumeID+".json"), data); err != nil {
+	if err := os.WriteFile(filepath.Join(vs.dir, rec.VolumeID+".json"), data, 0600); err != nil {
 		return err
 	}
 	return vs.writeManifestLocked()
@@ -221,28 +221,6 @@ func (vs *volumeStore) Load(volumeID string) (*volumeRecord, error) {
 
 func validVolumeID(id string) bool {
 	return id != "" && id != "." && id != ".." && id != "_manifest" && filepath.Base(id) == id
-}
-
-// Rename only a fully written record, so interrupted writes cannot leave a
-// truncated JSON file that a retry might mistake for a missing cloud volume.
-func atomicWriteFile(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".caa-record-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
 }
 
 func (vs *volumeStore) Delete(volumeID string) {
@@ -327,7 +305,7 @@ func (vs *volumeStore) writeManifestLocked() error {
 		if err != nil {
 			return err
 		}
-		return atomicWriteFile(path, data)
+		return os.WriteFile(path, data, 0600)
 	}
 
 	var params map[string]string
@@ -359,7 +337,7 @@ func (vs *volumeStore) writeManifestLocked() error {
 	if err != nil {
 		return err
 	}
-	return atomicWriteFile(path, data)
+	return os.WriteFile(path, data, 0600)
 }
 
 func (vs *volumeStore) readManifestLocked() (*volumeManifest, error) {
