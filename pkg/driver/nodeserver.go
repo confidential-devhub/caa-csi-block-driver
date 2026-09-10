@@ -102,15 +102,12 @@ func cleanStaleMountInfoDirs(rootDir string) {
 			if os.IsNotExist(err) {
 				continue
 			}
-			nsLogger.Printf("startup cleanup: removing unreadable mountInfo dir %s: %v", entry.Name(), err)
-			if err := os.RemoveAll(dirPath); err != nil {
-				nsLogger.Printf("startup cleanup: failed to remove %s: %v", dirPath, err)
-			}
+			nsLogger.Printf("startup cleanup: skipping %s, cannot read mountInfo: %v", entry.Name(), err)
 			continue
 		}
 
 		var info mountInfoJSON
-		if err := json.Unmarshal(data, &info); err != nil { // validates structure, not just syntax
+		if err := json.Unmarshal(data, &info); err != nil {
 			nsLogger.Printf("startup cleanup: removing corrupt mountInfo dir %s: %v", entry.Name(), err)
 			if err := os.RemoveAll(dirPath); err != nil {
 				nsLogger.Printf("startup cleanup: failed to remove %s: %v", dirPath, err)

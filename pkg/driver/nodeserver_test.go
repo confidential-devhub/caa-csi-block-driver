@@ -97,7 +97,7 @@ func TestCleanStaleMountInfoDirs_TargetGone(t *testing.T) {
 	t.Parallel()
 
 	rootDir := t.TempDir()
-	targetPath := "/tmp/nonexistent-target-" + t.Name()
+	targetPath := filepath.Join(t.TempDir(), "gone")
 
 	dirPath := writeMountInfoDir(t, rootDir, targetPath, &mountInfoJSON{
 		VolumeType: "directvol",
