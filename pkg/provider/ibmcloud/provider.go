@@ -348,9 +348,6 @@ func (p *IBMCloudProvider) CreateVolume(ctx context.Context, volumeID string, si
 		return nil, err
 	}
 	if existing != nil {
-		if existing.Capacity == nil || *existing.Capacity != sizeGB {
-			return nil, fmt.Errorf("volume %s already exists with a different capacity", volumeID)
-		}
 		logger.Printf("Volume %s already exists, reusing", volumeID)
 		return volumeInfo(volumeID, existing), nil
 	}
