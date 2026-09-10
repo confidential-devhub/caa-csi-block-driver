@@ -50,6 +50,7 @@ type Config struct {
 	ExtraTags     []string // User-supplied extra tags
 	FsType        string   // e.g., "ext4"
 	Throughput    int32    // SDP bandwidth in Mbps
+	VolumeID      string   // Pre-resolved volume ID from context
 }
 
 // IBMCloudProvider manages VPC block volumes using the official community ibmcloud-volume-vpc SDK.
@@ -110,6 +111,11 @@ func parseConfig(params map[string]string) (Config, error) {
 		}
 	}
 
+	volumeID := params["ibm-volume-id"]
+	if volumeID == "" {
+		volumeID = params["cloud-volume-path"]
+	}
+
 	cfg := Config{
 		Region:        firstParameter(params, "region", "ibmRegion"),
 		Zone:          firstParameter(params, "zone", "ibmZone"),
@@ -121,6 +127,7 @@ func parseConfig(params map[string]string) (Config, error) {
 		BillingType:   params["billingType"],
 		ExtraTags:     extraTags,
 		FsType:        params["csi.storage.k8s.io/fstype"],
+		VolumeID:      volumeID,
 	}
 
 	if throughput := params["throughput"]; throughput != "" {
@@ -255,6 +262,17 @@ func (p *IBMCloudProvider) VolumeExists(volumeID string) (bool, error) {
 }
 
 func (p *IBMCloudProvider) getVolumeByName(name string) (*provider.Volume, error) {
+	if p.config.VolumeID != "" {
+		volume, err := p.session.GetVolume(p.config.VolumeID)
+		if err == nil {
+			return volume, nil
+		}
+		if isNotFound(err) {
+			return nil, nil
+		}
+		logger.Printf("Warning: failed to GetVolume %s, falling back to name lookup: %v", p.config.VolumeID, err)
+	}
+
 	volume, err := p.session.GetVolumeByName(name)
 	if err == nil {
 		return volume, nil
