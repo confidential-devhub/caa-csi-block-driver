@@ -139,6 +139,8 @@ func newEC2Client(cfg Config) (*ec2.Client, error) {
 }
 
 func (p *AWSProvider) CreateVolume(ctx context.Context, volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
 
 	if p.config.AvailabilityZone == "" {
 		return nil, fmt.Errorf("awsAvailabilityZone is required to create volumes")
@@ -214,6 +216,9 @@ func (p *AWSProvider) CreateVolume(ctx context.Context, volumeID string, sizeByt
 }
 
 func (p *AWSProvider) DeleteVolume(ctx context.Context, volumeID string) error {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	ebsVolumeID, err := p.findEBSVolumeID(ctx, volumeID)
 	if err != nil {
 		logger.Printf("Volume %s not found, nothing to delete", volumeID)
@@ -234,6 +239,9 @@ func (p *AWSProvider) DeleteVolume(ctx context.Context, volumeID string) error {
 }
 
 func (p *AWSProvider) GetVolumeInfo(ctx context.Context, volumeID string) (*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	ebsVolumeID, err := p.findEBSVolumeID(ctx, volumeID)
 	if err != nil {
 		return nil, err
@@ -266,6 +274,9 @@ func (p *AWSProvider) GetVolumeInfo(ctx context.Context, volumeID string) (*prov
 }
 
 func (p *AWSProvider) VolumeExists(ctx context.Context, volumeID string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	result, err := p.ec2Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
 		Filters: []ec2types.Filter{
 			{
@@ -282,6 +293,8 @@ func (p *AWSProvider) VolumeExists(ctx context.Context, volumeID string) (bool, 
 
 // findEBSVolumeID looks up the EBS volume ID by our custom tag.
 func (p *AWSProvider) findEBSVolumeID(ctx context.Context, volumeID string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
 
 	result, err := p.ec2Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
 		Filters: []ec2types.Filter{
@@ -304,6 +317,9 @@ func (p *AWSProvider) findEBSVolumeID(ctx context.Context, volumeID string) (str
 
 // ExpandVolume resizes an existing EBS volume to newSizeBytes.
 func (p *AWSProvider) ExpandVolume(ctx context.Context, volumeID string, newSizeBytes int64) error {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	ebsVolumeID, err := p.findEBSVolumeID(ctx, volumeID)
 	if err != nil {
 		return fmt.Errorf("cannot find EBS volume for %s: %w", volumeID, err)
@@ -548,6 +564,9 @@ func (p *AWSProvider) ListManagedVolumes(ctx context.Context) ([]*provider.Volum
 
 // CreateVolumeFromSnapshot creates a new EBS volume from an existing snapshot.
 func (p *AWSProvider) CreateVolumeFromSnapshot(ctx context.Context, volumeID, snapshotID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	if p.config.AvailabilityZone == "" {
 		return nil, fmt.Errorf("awsAvailabilityZone is required to create volumes")
 	}
