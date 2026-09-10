@@ -241,8 +241,13 @@ func TestCreateVolumeIdempotency(t *testing.T) {
 		t.Fatalf("existing volume was not reused: %+v", info)
 	}
 
-	if _, err := ibmProvider.CreateVolume(name, 30*gib); err == nil || !strings.Contains(err.Error(), "different capacity") {
-		t.Fatalf("expected a capacity conflict, got %v", err)
+	info, err = ibmProvider.CreateVolume(name, 1*gib)
+	if err != nil {
+		t.Fatalf("reusing existing volume: %v", err)
+	}
+
+	if info.Path != "r006-existing" {
+		t.Fatalf("unexpected existing volume: %+v", info)
 	}
 	if session.createCalls != 0 {
 		t.Fatal("capacity conflict must not create another volume")
