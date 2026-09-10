@@ -95,6 +95,8 @@ Update `deploy/daemonset-ibmcloud.yaml` to point to the built driver image, then
 kubectl apply -f deploy/daemonset-ibmcloud.yaml
 ```
 
+> **Note on Volume Stats**: By default, the Node Server attempts to gather filesystem metrics from inside the sandboxed PeerPod guest VM via the `kata-runtime` CLI. Since `kata-runtime` is not pre-packaged inside alpine-based CSI containers, the DaemonSet includes the environment variable `CSI_ALLOW_HOST_STATS_FALLBACK: "true"`. This instructs the Node Server to fallback gracefully to host-side `statfs` measurements of the mount point and prevents `"exec: \"kata-runtime\": executable file not found in $PATH"` errors from flooding the driver logs.
+
 ### Step 3: Create the StorageClass
 Apply the StorageClass to your cluster:
 

@@ -91,6 +91,9 @@ spec:
             # Empty-store recovery / delete fallback configuration
             - name: CSI_CLOUD_PROVIDER
               value: "ibmcloud"
+            # Fallback to local host-side stats when kata-runtime is not present in container $PATH
+            - name: CSI_ALLOW_HOST_STATS_FALLBACK
+              value: "true"
           securityContext:
             privileged: true
           volumeMounts:
