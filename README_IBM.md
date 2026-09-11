@@ -72,21 +72,47 @@ VPC provider validates supported profile, capacity, IOPS, and throughput combina
 
 ## 4. Deploying to IBM IKS / ROKS
 
-### Step 1: Clone and Set Up the Namespace
-Ensure you have targeted the correct cluster context and apply the driver namespace and RBAC:
+The IBM libraries read the `storage-secret-store` Secret and `cluster-info`
+ConfigMap from the namespace the driver pod runs in. IKS and ROKS create both
+in `kube-system` only, so deploy the driver there. If the cluster's
+`storage-secret-store` uses an IAM trusted profile, that profile must also
+authorize the driver's service account.
+
+IKS and ROKS on VPC use `/var/data/kubelet` as the kubelet root directory.
+
+### Installing with Helm
 
 ```bash
-kubectl apply -f deploy/namespace.yaml
+helm install caa-csi charts/caa-csi-block-driver \
+  --namespace kube-system \
+  --set namespace.name=kube-system \
+  --set namespace.create=false \
+  --set provider=ibmcloud \
+  --set kubeletDir=/var/data/kubelet \
+  --set image.repository=<your-registry>/caa-csi-block-driver \
+  --set image.tag=v0.2.0 \
+  --set ibmcloud.region=us-south \
+  --set ibmcloud.zone=us-south-1
+```
+
+On ROKS, also grant the privileged SCC to the chart's service account:
+
+```bash
+oc adm policy add-scc-to-user privileged -z caa-csi-caa-csi-block-driver -n kube-system
+```
+
+See the `ibmcloud` section of `charts/caa-csi-block-driver/values.yaml` for
+the remaining StorageClass settings.
+
+### Installing with Manifests
+
+### Step 1: Clone and Set Up the Namespace
+Ensure you have targeted the correct cluster context and apply the driver RBAC:
+
+```bash
 kubectl apply -f deploy/rbac.yaml
 kubectl apply -f deploy/csi-driver.yaml
 ```
-
-> The DaemonSet expects IBM authentication configuration in the
-> `caa-csi-block` namespace. Kubernetes service accounts and secrets are
-> namespace-scoped, so resources from `kube-system` are not reused automatically.
-> Ensure the IBM IAM trusted profile authorizes
-> `system:serviceaccount:caa-csi-block:caa-csi-provisioner`, and that both
-> `storage-secret-store` and `cluster-info` exist in `caa-csi-block` before deploying.
 
 ### Step 2: Deploy the DaemonSet
 Update `deploy/daemonset-ibmcloud.yaml` to point to the built driver image, then deploy it:
@@ -156,8 +182,8 @@ Check the status of the volume and pod:
 # Verify the PVC status goes to 'Bound'
 kubectl get pvc ibmcloud-test-pvc
 
-# Verify the driver logs volume creation
-kubectl logs -n caa-csi-block -l app=caa-csi-block -c caa-csi-block-driver
+# Verify the driver logs volume creation (Helm installs use -l app.kubernetes.io/name=caa-csi-block-driver)
+kubectl logs -n kube-system -l app=caa-csi-block -c caa-csi-block-driver
 
 # Verify the pod goes to 'Running' with the PeerPod runtime
 kubectl get pod ibmcloud-test-pod
