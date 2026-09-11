@@ -4,11 +4,11 @@ metadata:
   name: caa-csi-block-plugin
   namespace: kube-system
   labels:
-    app: caa-csi-block
+    app: kube-system
 spec:
   selector:
     matchLabels:
-      app: caa-csi-block
+      app: kube-system
   template:
     metadata:
       labels:
@@ -43,7 +43,6 @@ spec:
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
-
         # Sidecar: node-driver-registrar (registers CSI driver with kubelet)
         - name: node-driver-registrar
           image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.9.0
@@ -63,7 +62,6 @@ spec:
               name: socket-dir
             - mountPath: /registration
               name: registration-dir
-
         # Main: caa-csi-block-driver (compiled with the ibmcloud provider)
         - name: caa-csi-block-driver
           image: localhost/caa-csi-block-driver:v0.2.0
@@ -114,7 +112,6 @@ spec:
             - mountPath: /etc/storage_ibmc
               name: customer-auth
               readOnly: true
-
         # Provides short-lived IBM credentials to the driver over provider.sock.
         - name: storage-secret-sidecar
           image: icr.io/obs/armada-storage-secret:v1.3.65
@@ -141,7 +138,6 @@ spec:
             - mountPath: /var/run/secrets/tokens
               name: vault-token
               readOnly: true
-
       volumes:
         - name: provider-socket-dir
           emptyDir: {}
