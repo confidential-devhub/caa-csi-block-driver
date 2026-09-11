@@ -44,3 +44,39 @@ roleRef:
   kind: ClusterRole
   name: {{ include "caa-csi.fullname" . }}
   apiGroup: rbac.authorization.k8s.io
+{{- if eq .Values.provider "ibmcloud" }}
+---
+# the IBM libraries read storage-secret-store and cluster-info from the pod's own namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "caa-csi.fullname" . }}-ibmcloud
+  namespace: {{ include "caa-csi.namespace" . }}
+  labels:
+    {{- include "caa-csi.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["storage-secret-store"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["cluster-info"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "caa-csi.fullname" . }}-ibmcloud
+  namespace: {{ include "caa-csi.namespace" . }}
+  labels:
+    {{- include "caa-csi.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "caa-csi.serviceAccountName" . }}
+    namespace: {{ include "caa-csi.namespace" . }}
+roleRef:
+  kind: Role
+  name: {{ include "caa-csi.fullname" . }}-ibmcloud
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

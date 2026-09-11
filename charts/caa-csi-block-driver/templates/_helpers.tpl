@@ -5,6 +5,9 @@
 {{- if and (eq .Values.provider "aws") .Values.aws.irsa.enabled (not .Values.aws.irsa.roleArn) }}
 {{- fail "aws.irsa.roleArn is required when aws.irsa.enabled=true" }}
 {{- end }}
+{{- if and (eq .Values.provider "ibmcloud") .Values.ibmcloud.encrypted (not .Values.ibmcloud.encryptionKey) }}
+{{- fail "ibmcloud.encryptionKey is required when ibmcloud.encrypted=true" }}
+{{- end }}
 {{- end }}
 
 {{- define "caa-csi.name" -}}

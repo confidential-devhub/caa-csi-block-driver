@@ -52,7 +52,7 @@ spec:
           args:
             - "--v=3"
             - "--csi-address=/csi/csi.sock"
-            - "--kubelet-registration-path=/var/lib/kubelet/plugins/caa-csi-block/csi.sock"
+            - "--kubelet-registration-path={{ .Values.kubeletDir }}/plugins/caa-csi-block/csi.sock"
           env:
             - name: KUBE_NODE_NAME
               valueFrom:
@@ -77,6 +77,9 @@ spec:
             - "--drivername={{ .Values.csiDriver.name }}"
             - "--endpoint=unix:///csi/csi.sock"
             - "--nodeid=$(KUBE_NODE_NAME)"
+            {{- if eq .Values.provider "ibmcloud" }}
+            - "--sidecarEndpoint=/sidecardir/provider.sock"
+            {{- end }}
           env:
             - name: KUBE_NODE_NAME
               valueFrom:
@@ -102,6 +105,19 @@ spec:
                   key: AWS_SECRET_ACCESS_KEY
             {{- end }}
             {{- end }}
+            {{- if eq .Values.provider "ibmcloud" }}
+            # the IBM volume library compares IKS_ENABLED against "True" exactly
+            - name: IKS_ENABLED
+              value: "True"
+            - name: IKS_BLOCK_PROVIDER_NAME
+              value: iks-vpc-classic
+            - name: VPC_ENABLED
+              value: "True"
+            - name: VPC_BLOCK_PROVIDER_NAME
+              value: vpc-classic
+            - name: SECRET_CONFIG_PATH
+              value: /etc/storage_ibmc
+            {{- end }}
           {{- with .Values.resources.driver }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -111,10 +127,10 @@ spec:
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
-            - mountPath: /var/lib/kubelet/pods
+            - mountPath: {{ .Values.kubeletDir }}/pods
               name: mountpoint-dir
               mountPropagation: Bidirectional
-            - mountPath: /var/lib/kubelet/plugins
+            - mountPath: {{ .Values.kubeletDir }}/plugins
               name: plugins-dir
               mountPropagation: Bidirectional
             - mountPath: /run/kata-containers/shared/direct-volumes
@@ -128,23 +144,59 @@ spec:
             - mountPath: {{ .Values.libvirt.volumeDir }}
               name: libvirt-pool
             {{- end }}
+            {{- if eq .Values.provider "ibmcloud" }}
+            - mountPath: /sidecardir
+              name: secret-sidecar-sock-dir
+            - mountPath: /etc/storage_ibmc
+              name: customer-auth
+              readOnly: true
+            {{- end }}
+
+        {{- if eq .Values.provider "ibmcloud" }}
+        # issues short-lived IBM Cloud IAM tokens to the driver over provider.sock
+        - name: storage-secret-sidecar
+          image: {{ .Values.ibmcloud.secretSidecar.image }}
+          args:
+            - "--endpoint=unix:/sidecardir/provider.sock"
+          env:
+            - name: TOKEN_EXPIRY_DIFF
+              value: 20m
+            - name: PROFILE_CAPACITY
+              value: "1"
+          {{- with .Values.ibmcloud.secretSidecar.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 2121
+            runAsGroup: 2121
+          volumeMounts:
+            - mountPath: /sidecardir
+              name: secret-sidecar-sock-dir
+            - mountPath: /var/run/secrets/tokens
+              name: vault-token
+              readOnly: true
+        {{- end }}
 
       volumes:
         - name: socket-dir
           hostPath:
-            path: /var/lib/kubelet/plugins/caa-csi-block
+            path: {{ .Values.kubeletDir }}/plugins/caa-csi-block
             type: DirectoryOrCreate
         - name: mountpoint-dir
           hostPath:
-            path: /var/lib/kubelet/pods
+            path: {{ .Values.kubeletDir }}/pods
             type: DirectoryOrCreate
         - name: registration-dir
           hostPath:
-            path: /var/lib/kubelet/plugins_registry
+            path: {{ .Values.kubeletDir }}/plugins_registry
             type: Directory
         - name: plugins-dir
           hostPath:
-            path: /var/lib/kubelet/plugins
+            path: {{ .Values.kubeletDir }}/plugins
             type: Directory
         - name: shared-directvols
           hostPath:
@@ -163,4 +215,17 @@ spec:
           hostPath:
             path: {{ .Values.libvirt.volumeDir }}
             type: DirectoryOrCreate
+        {{- end }}
+        {{- if eq .Values.provider "ibmcloud" }}
+        - name: secret-sidecar-sock-dir
+          emptyDir: {}
+        - name: customer-auth
+          secret:
+            secretName: storage-secret-store
+        - name: vault-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: vault-token
+                  expirationSeconds: 600
         {{- end }}

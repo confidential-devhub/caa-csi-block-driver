@@ -27,6 +27,28 @@ parameters:
   azureLocation: {{ required "azure.location is required when provider=azure" .Values.azure.location | quote }}
   azureDiskSku: {{ .Values.azure.diskSku | quote }}
   {{- end }}
+  {{- if eq .Values.provider "ibmcloud" }}
+  region: {{ required "ibmcloud.region is required when provider=ibmcloud" .Values.ibmcloud.region | quote }}
+  zone: {{ required "ibmcloud.zone is required when provider=ibmcloud" .Values.ibmcloud.zone | quote }}
+  profile: {{ .Values.ibmcloud.profile | quote }}
+  billingType: {{ .Values.ibmcloud.billingType | quote }}
+  encrypted: {{ .Values.ibmcloud.encrypted | toString | quote }}
+  {{- with .Values.ibmcloud.encryptionKey }}
+  encryptionKey: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ibmcloud.resourceGroup }}
+  resourceGroup: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ibmcloud.iops }}
+  iops: {{ . | toString | quote }}
+  {{- end }}
+  {{- with .Values.ibmcloud.throughput }}
+  throughput: {{ . | toString | quote }}
+  {{- end }}
+  {{- with .Values.ibmcloud.tags }}
+  tags: {{ . | quote }}
+  {{- end }}
+  {{- end }}
   {{- if eq .Values.provider "libvirt" }}
   cloudProviderVolumePath: {{ .Values.libvirt.volumeDir | quote }}
   {{- end }}

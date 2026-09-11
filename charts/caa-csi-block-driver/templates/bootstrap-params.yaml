@@ -20,6 +20,13 @@ data:
       "azureResourceGroup": {{ required "azure.resourceGroup is required when provider=azure" .Values.azure.resourceGroup | quote }},
       "azureLocation": {{ required "azure.location is required when provider=azure" .Values.azure.location | quote }},
       "azureDiskSKU": {{ .Values.azure.diskSku | quote }}
+      {{- else if eq .Values.provider "ibmcloud" }},
+      "region": {{ required "ibmcloud.region is required when provider=ibmcloud" .Values.ibmcloud.region | quote }},
+      "zone": {{ required "ibmcloud.zone is required when provider=ibmcloud" .Values.ibmcloud.zone | quote }},
+      "profile": {{ .Values.ibmcloud.profile | quote }}
+      {{- with .Values.ibmcloud.resourceGroup }},
+      "resourceGroup": {{ . | quote }}
+      {{- end }}
       {{- else if eq .Values.provider "libvirt" }},
       "cloudProviderVolumePath": {{ .Values.libvirt.volumeDir | quote }}
       {{- end }}

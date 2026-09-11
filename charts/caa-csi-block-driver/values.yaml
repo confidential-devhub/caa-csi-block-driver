@@ -1,4 +1,4 @@
-# Cloud provider: aws, azure, or libvirt
+# Cloud provider: aws, azure, ibmcloud, or libvirt
 provider: aws
 
 nameOverride: ""
@@ -19,6 +19,10 @@ sidecarImages:
 
 csiDriver:
   name: caa-csi-block.csi.confidentialcontainers.io
+
+# Kubelet root directory on the nodes. IBM Cloud IKS and ROKS on VPC use
+# /var/data/kubelet.
+kubeletDir: /var/lib/kubelet
 
 # AWS provider settings
 aws:
@@ -41,6 +45,35 @@ azure:
   resourceGroup: ""
   location: ""
   diskSku: StandardSSD_LRS
+
+# IBM Cloud VPC Block provider settings. The driver reads the
+# storage-secret-store Secret and cluster-info ConfigMap from the release
+# namespace; IKS and ROKS create both in kube-system only.
+ibmcloud:
+  region: ""
+  zone: ""
+  profile: general-purpose
+  # resource group ID; empty uses the group from storage-secret-store
+  resourceGroup: ""
+  # only for the custom and sdp profiles
+  iops: ""
+  # Mbps, only for the sdp profile
+  throughput: ""
+  billingType: hourly
+  encrypted: false
+  # Key Protect or Hyper Protect key CRN, used when encrypted=true
+  encryptionKey: ""
+  # comma-separated extra tags for each volume
+  tags: ""
+  secretSidecar:
+    image: icr.io/obs/armada-storage-secret:v1.3.64
+    resources:
+      requests:
+        cpu: 10m
+        memory: 20Mi
+      limits:
+        cpu: 40m
+        memory: 80Mi
 
 # Libvirt provider settings
 libvirt:
