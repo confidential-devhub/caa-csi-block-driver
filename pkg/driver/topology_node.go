@@ -110,8 +110,8 @@ func lookupNodeLabelsFromAPI(ctx context.Context, nodeID string) (region, zone s
 		return "", "", fmt.Errorf("decoding node %s: %w", nodeID, err)
 	}
 	labels := node.Metadata.Labels
-	zone = firstNonEmptyLabel(labels, k8sZoneLabel, k8sZoneLabelBeta)
-	region = firstNonEmptyLabel(labels, k8sRegionLabel, k8sRegionLabelBeta)
+	zone = firstNonEmptyLabel(labels, k8sZoneLabel, k8sZoneLabelBeta, "ibm-cloud.kubernetes.io/zone")
+	region = firstNonEmptyLabel(labels, k8sRegionLabel, k8sRegionLabelBeta, "ibm-cloud.kubernetes.io/region")
 	return region, zone, nil
 }
 

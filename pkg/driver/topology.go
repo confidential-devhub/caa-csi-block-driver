@@ -21,7 +21,10 @@ const (
 	k8sRegionLabelBeta = "failure-domain.beta.kubernetes.io/region"
 )
 
-var topologyZoneKeys = []string{topologyZoneKey, k8sZoneLabel, k8sZoneLabelBeta}
+var (
+	topologyZoneKeys   = []string{topologyZoneKey, k8sZoneLabel, k8sZoneLabelBeta, "ibm-cloud.kubernetes.io/zone"}
+	topologyRegionKeys = []string{topologyRegionKey, k8sRegionLabel, k8sRegionLabelBeta, "ibm-cloud.kubernetes.io/region"}
+)
 
 func cloneParams(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in)+2)
@@ -31,19 +34,33 @@ func cloneParams(in map[string]string) map[string]string {
 	return out
 }
 
-// applyTopologyParams fills awsAvailabilityZone from AccessibilityRequirements
-// when the StorageClass did not set it explicitly. Only applies to AWS —
-// other providers don't use awsAvailabilityZone and shouldn't have it
-// injected into their volume records or VolumeContext.
+// applyTopologyParams fills awsAvailabilityZone or zone from AccessibilityRequirements
+// when the StorageClass did not set it explicitly. Only applies to AWS and IBM Cloud.
 func applyTopologyParams(params map[string]string, req *csi.TopologyRequirement) {
-	if params["cloudProvider"] != "aws" {
+	provider := params["cloudProvider"]
+	if provider != "aws" && provider != "ibmcloud" {
 		return
 	}
-	if params["awsAvailabilityZone"] != "" {
+
+	zone := topologyValue(req, topologyZoneKeys)
+	if zone == "" || zone == ignoredTopologyZone {
 		return
 	}
-	if zone := topologyValue(req, topologyZoneKeys); zone != "" && zone != ignoredTopologyZone {
-		params["awsAvailabilityZone"] = zone
+
+	if provider == "aws" {
+		if params["awsAvailabilityZone"] == "" {
+			params["awsAvailabilityZone"] = zone
+		}
+	} else if provider == "ibmcloud" {
+		if params["zone"] == "" && params["ibmZone"] == "" {
+			params["zone"] = zone
+		}
+		if params["region"] == "" && params["ibmRegion"] == "" {
+			region := topologyValue(req, topologyRegionKeys)
+			if region != "" {
+				params["region"] = region
+			}
+		}
 	}
 }
 
@@ -76,12 +93,27 @@ func accessibleTopology(params map[string]string) []*csi.Topology {
 	if params == nil {
 		return nil
 	}
-	zone := params["awsAvailabilityZone"]
+	var zone, region string
+
+	if params["awsAvailabilityZone"] != "" {
+		zone = params["awsAvailabilityZone"]
+		region = params["awsRegion"]
+	} else if params["cloudProvider"] == "ibmcloud" {
+		zone = params["zone"]
+		if zone == "" {
+			zone = params["ibmZone"]
+		}
+		region = params["region"]
+		if region == "" {
+			region = params["ibmRegion"]
+		}
+	}
+
 	if zone == "" {
 		return nil
 	}
 	segments := map[string]string{topologyZoneKey: zone}
-	if region := params["awsRegion"]; region != "" {
+	if region != "" {
 		segments[topologyRegionKey] = region
 	}
 	return []*csi.Topology{{Segments: segments}}
