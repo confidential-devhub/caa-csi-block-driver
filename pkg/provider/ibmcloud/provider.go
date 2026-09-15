@@ -413,6 +413,7 @@ const (
 func (p *IBMCloudProvider) configTag() string {
 	cfg := p.config
 	cfg.ExtraTags = nil
+	cfg.VolumeID = ""
 	data, _ := json.Marshal(cfg)
 	return fmt.Sprintf("%s%x", configTagPrefix, sha256.Sum256(data))
 }
