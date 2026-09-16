@@ -20,7 +20,8 @@ spec:
         - name: csi-provisioner
           image: {{ .Values.sidecarImages.provisioner }}
           args:
-            - "-v=3"
+            - "--v=3"
+            - "--timeout=600s"
             - "--csi-address=/csi/csi.sock"
             - "--worker-threads=5"
             - "--feature-gates=Topology=true"
