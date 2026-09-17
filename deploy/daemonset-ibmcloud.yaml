@@ -23,6 +23,7 @@ spec:
             - "--v=3"
             - "--csi-address=/csi/csi.sock"
             - "--timeout=600s"
+            - "--leader-election=true"
             - "--worker-threads=5"
           env:
             - name: NODE_NAME

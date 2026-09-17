@@ -193,6 +193,30 @@ func TestCreateFailureAndDuplicateName(t *testing.T) {
 	}
 }
 
+func TestDeleteUsesConfiguredNativeIDWithDuplicateNames(t *testing.T) {
+	p, s := testProvider(t)
+	info, err := p.CreateVolume(context.TODO(), "pvc-test", 20*gib)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	duplicate := *s.volumes[0]
+	duplicate.VolumeID = "r006-duplicate"
+	s.volumes = append(s.volumes, &duplicate)
+	s.lastFilters = nil
+	p.config.VolumeID = info.Path
+
+	if err := p.DeleteVolume(context.TODO(), "pvc-test"); err != nil {
+		t.Fatal(err)
+	}
+	if s.deletes != 1 || len(s.volumes) != 1 || s.volumes[0].VolumeID != duplicate.VolumeID {
+		t.Fatalf("wrong native volume deleted: deletes=%d volumes=%+v", s.deletes, s.volumes)
+	}
+	if s.lastFilters != nil {
+		t.Fatalf("delete unexpectedly fell back to name lookup: %v", s.lastFilters)
+	}
+}
+
 func TestPinnedSDKResponseShape(t *testing.T) {
 	p, s := testProvider(t)
 	s.createResult = func(v provider.Volume) *provider.Volume {

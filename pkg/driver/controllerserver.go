@@ -72,6 +72,17 @@ func (cs *controllerServer) resolveProviderParams(secrets map[string]string) map
 	return cs.store.BootstrapParams()
 }
 
+// deleteProviderParams preserves the cloud-native volume ID recorded at
+// creation time. Providers that understand cloud-volume-path can then delete
+// the exact disk instead of relying on a potentially ambiguous name lookup.
+func deleteProviderParams(rec *volumeRecord) map[string]string {
+	params := cloneParams(rec.Params)
+	if rec.Path != "" {
+		params["cloud-volume-path"] = rec.Path
+	}
+	return params
+}
+
 // volumeLookupStatus maps store/lookup errors to gRPC status codes:
 // missing record → NotFound; corrupt/unreadable/other → Internal.
 func volumeLookupStatus(kind, volumeID string, err error) error {
@@ -225,7 +236,7 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 
 	var params map[string]string
 	if rec, err := cs.loadVolumeRecord(volumeID); err == nil {
-		params = rec.Params
+		params = deleteProviderParams(rec)
 	} else {
 		params = cs.resolveProviderParams(req.GetSecrets())
 		if params == nil {

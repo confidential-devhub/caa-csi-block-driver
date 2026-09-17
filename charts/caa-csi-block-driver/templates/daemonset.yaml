@@ -23,6 +23,7 @@ spec:
             - "--v=3"
             - "--timeout=600s"
             - "--csi-address=/csi/csi.sock"
+            - "--leader-election=true"
             - "--worker-threads=5"
             - "--feature-gates=Topology=true"
           env:
