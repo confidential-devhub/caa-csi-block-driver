@@ -304,6 +304,9 @@ func (p *AzureProvider) DeleteVolume(ctx context.Context, volumeID string) error
 }
 
 func (p *AzureProvider) GetVolumeInfo(ctx context.Context, volumeID string) (*provider.VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	name := p.diskName(volumeID)
 
 	result, err := p.disksClient.Get(ctx, p.config.ResourceGroup, name, nil)
@@ -335,6 +338,9 @@ func (p *AzureProvider) GetVolumeInfo(ctx context.Context, volumeID string) (*pr
 }
 
 func (p *AzureProvider) VolumeExists(ctx context.Context, volumeID string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	name := p.diskName(volumeID)
 
 	_, err := p.disksClient.Get(ctx, p.config.ResourceGroup, name, nil)
@@ -574,6 +580,9 @@ func (p *AzureProvider) CreateVolumeFromVolume(ctx context.Context, volumeID, so
 }
 
 func (p *AzureProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID string) (*provider.SnapshotInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	if p.config.Location == "" {
 		return nil, fmt.Errorf("azureLocation is required to create snapshots")
 	}
@@ -634,6 +643,9 @@ func (p *AzureProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID
 }
 
 func (p *AzureProvider) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	snapName := p.snapName(snapshotID)
 	logger.Printf("Deleting Azure snapshot %s", snapName)
 
@@ -655,6 +667,9 @@ func (p *AzureProvider) DeleteSnapshot(ctx context.Context, snapshotID string) e
 
 // If volumeID is non-empty, only snapshots for that volume are returned.
 func (p *AzureProvider) ListSnapshots(ctx context.Context, volumeID string) ([]*provider.SnapshotInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	pager := p.snapshotsClient.NewListByResourceGroupPager(p.config.ResourceGroup, nil)
 	var snaps []*provider.SnapshotInfo
 
@@ -706,6 +721,9 @@ func (p *AzureProvider) ListSnapshots(ctx context.Context, volumeID string) ([]*
 
 // Returns nil, nil if the snapshot does not exist.
 func (p *AzureProvider) FindSnapshot(ctx context.Context, snapshotID string) (*provider.SnapshotInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	snapName := p.snapName(snapshotID)
 	result, err := p.snapshotsClient.Get(ctx, p.config.ResourceGroup, snapName, nil)
 	if err != nil {
