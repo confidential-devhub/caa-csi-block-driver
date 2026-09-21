@@ -359,6 +359,9 @@ func (p *AWSProvider) ExpandVolume(ctx context.Context, volumeID string, newSize
 
 // CreateSnapshot creates an EBS snapshot from the given volume.
 func (p *AWSProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID string) (*provider.SnapshotInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	ebsVolumeID, err := p.findEBSVolumeID(ctx, volumeID)
 	if err != nil {
 		return nil, fmt.Errorf("cannot find EBS volume for snapshot: %w", err)
@@ -397,6 +400,9 @@ func (p *AWSProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID s
 
 // DeleteSnapshot deletes an EBS snapshot by its CSI snapshot ID tag.
 func (p *AWSProvider) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	ebsSnapID, err := p.findEBSSnapshotID(ctx, snapshotID)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -425,6 +431,9 @@ func (p *AWSProvider) DeleteSnapshot(ctx context.Context, snapshotID string) err
 // for that volume are returned; otherwise all managed snapshots are listed.
 // Uses pagination to handle large numbers of snapshots.
 func (p *AWSProvider) ListSnapshots(ctx context.Context, volumeID string) ([]*provider.SnapshotInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	var filters []ec2types.Filter
 	if volumeID != "" {
 		filters = append(filters, ec2types.Filter{
@@ -481,6 +490,9 @@ func (p *AWSProvider) lookupEBSSnapshot(ctx context.Context, snapshotID string) 
 // FindSnapshot looks up a single snapshot by its CSI snapshot name tag.
 // Returns nil, nil if the snapshot does not exist.
 func (p *AWSProvider) FindSnapshot(ctx context.Context, snapshotID string) (*provider.SnapshotInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
 	snap, err := p.lookupEBSSnapshot(ctx, snapshotID)
 	if err != nil {
 		return nil, err
