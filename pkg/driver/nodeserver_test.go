@@ -53,6 +53,43 @@ func TestParseKataVolumeStats(t *testing.T) {
 	}
 }
 
+func TestRequestedFsType(t *testing.T) {
+	tests := []struct {
+		name       string
+		capability *csi.VolumeCapability
+		context    map[string]string
+		want       string
+	}{
+		{
+			name: "mount capability takes precedence",
+			capability: &csi.VolumeCapability{
+				AccessType: &csi.VolumeCapability_Mount{
+					Mount: &csi.VolumeCapability_MountVolume{FsType: "xfs"},
+				},
+			},
+			context: map[string]string{"csi.storage.k8s.io/fstype": "ext4"},
+			want:    "xfs",
+		},
+		{
+			name:    "volume context fallback",
+			context: map[string]string{"csi.storage.k8s.io/fstype": "xfs"},
+			want:    "xfs",
+		},
+		{
+			name: "default",
+			want: "ext4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := requestedFsType(tt.capability, tt.context); got != tt.want {
+				t.Fatalf("requestedFsType() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // writeMountInfoDir creates a base64-encoded dir under rootDir with a
 // mountInfo.json inside it. Returns the dir path.
 func writeMountInfoDir(t *testing.T, rootDir, targetPath string, info *mountInfoJSON) string {
