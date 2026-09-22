@@ -62,6 +62,18 @@ type nodeServer struct {
 	topo    *csi.Topology
 }
 
+func requestedFsType(capability *csi.VolumeCapability, volumeContext map[string]string) string {
+	if capability != nil && capability.GetMount() != nil {
+		if fsType := strings.TrimSpace(capability.GetMount().GetFsType()); fsType != "" {
+			return fsType
+		}
+	}
+	if fsType := strings.TrimSpace(volumeContext["csi.storage.k8s.io/fstype"]); fsType != "" {
+		return fsType
+	}
+	return "ext4"
+}
+
 func newNodeServer(nodeID string) *nodeServer {
 	ns := &nodeServer{
 		nodeID:  nodeID,
@@ -204,7 +216,7 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	info := mountInfoJSON{
 		VolumeType: "directvol",
 		Device:     devicePath,
-		FsType:     "ext4",
+		FsType:     requestedFsType(req.GetVolumeCapability(), attrib),
 		Metadata:   attrib,
 	}
 
