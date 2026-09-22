@@ -9,6 +9,8 @@ image:
   tag: 0.2.0
   pullPolicy: IfNotPresent
 
+imagePullSecrets: []
+
 namespace:
   name: caa-csi-block
   create: true
