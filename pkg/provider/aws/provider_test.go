@@ -147,8 +147,8 @@ func TestNewAWSProvider_Validation(t *testing.T) {
 					t.Errorf("error %q does not contain %q", err.Error(), tt.errSubstr)
 				}
 			} else {
-				if err != nil && strings.Contains(err.Error(), "invalid aws") {
-					t.Errorf("unexpected validation error: %v", err)
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
 				}
 			}
 		})

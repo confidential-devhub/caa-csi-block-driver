@@ -5,7 +5,9 @@ package libvirt
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -258,7 +260,7 @@ func TestCreateVolume_FileCreation(t *testing.T) {
 	_, err := p.CreateVolume(ctx, "new-vol", 1024*1024)
 	// mkfs.ext4 may not be available in the test env
 	if err != nil {
-		if strings.Contains(err.Error(), "mkfs") || strings.Contains(err.Error(), "exec") {
+		if errors.Is(err, exec.ErrNotFound) {
 			t.Skipf("skipping: mkfs.ext4 not available: %v", err)
 		}
 		t.Fatalf("CreateVolume failed: %v", err)
