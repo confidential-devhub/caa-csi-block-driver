@@ -62,6 +62,18 @@ spec:
             - mountPath: /registration
               name: registration-dir
 
+        - name: csi-resizer
+          image: registry.k8s.io/sig-storage/csi-resizer:v1.9.0
+          args:
+            - "--v=3"
+            - "--csi-address=/csi/csi.sock"
+            - "--leader-election=true"
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+
         - name: caa-csi-block-driver
           image: 992382582441.dkr.ecr.us-east-2.amazonaws.com/caa-csi-block-driver:v0.2.0
           args:
