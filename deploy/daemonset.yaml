@@ -65,6 +65,19 @@ spec:
             - mountPath: /registration
               name: registration-dir
 
+        # Sidecar: csi-resizer (watches for PVC size changes, calls ControllerExpandVolume)
+        - name: csi-resizer
+          image: registry.k8s.io/sig-storage/csi-resizer:v1.9.0
+          args:
+            - "--v=3"
+            - "--csi-address=/csi/csi.sock"
+            - "--leader-election=true"
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+
         # Main: caa-csi-block-driver
         - name: caa-csi-block-driver
           image: localhost/caa-csi-block-driver:v0.1.0

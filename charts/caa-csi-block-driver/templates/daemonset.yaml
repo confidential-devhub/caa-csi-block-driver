@@ -71,6 +71,22 @@ spec:
             - mountPath: /registration
               name: registration-dir
 
+        - name: csi-resizer
+          image: {{ .Values.sidecarImages.resizer }}
+          args:
+            - "--v=3"
+            - "--csi-address=/csi/csi.sock"
+            - "--leader-election=true"
+          {{- with .Values.resources.resizer }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            privileged: {{ .Values.nodePlugin.privileged }}
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+
         - name: caa-csi-block-driver
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
