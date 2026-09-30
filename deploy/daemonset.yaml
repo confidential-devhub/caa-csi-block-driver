@@ -25,6 +25,7 @@ spec:
             - "--worker-threads=5"
             # v3.6 has Topology off by default; required for WaitForFirstConsumer.
             - "--feature-gates=Topology=true"
+            - "--leader-election=true"
           env:
             - name: NODE_NAME
               valueFrom:
