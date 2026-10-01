@@ -9,7 +9,7 @@ Go CSI block driver (single binary, `cmd/main.go`) for Confidential Containers p
 - `go test ./...` — unit tests (in `pkg/driver/`, `pkg/provider/azure/`).
 - `make test` — **not** unit tests: builds the binary and runs csi-sanity conformance via `hack/run-csi-sanity.sh` against a temp libvirt provider (needs `csi-sanity`, auto-installed via `go install .../csi-test/v5/cmd/csi-sanity@latest`). Verbose: `make test-verbose`.
 - Verification order: `make fmt && make lint && go test ./... && make test`.
-- `make image` — builds with **podman** (not docker); Dockerfile `COPY`s `bin/caa-csi-block-driver`, so the binary must exist.
+- `make image` — builds with **podman** (not docker); multi-stage Dockerfile compiles the binary from source using Go cross-compilation.
 
 ## CI reality
 
