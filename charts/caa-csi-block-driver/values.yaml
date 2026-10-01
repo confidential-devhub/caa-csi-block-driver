@@ -15,7 +15,6 @@ namespace:
 
 sidecarImages:
   provisioner: registry.k8s.io/sig-storage/csi-provisioner:v3.6.0
-  resizer: registry.k8s.io/sig-storage/csi-resizer:v1.9.0
   nodeDriverRegistrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.9.0
 
 csiDriver:
@@ -76,13 +75,6 @@ resources:
       cpu: 200m
       memory: 256Mi
   provisioner:
-    requests:
-      cpu: 20m
-      memory: 32Mi
-    limits:
-      cpu: 100m
-      memory: 128Mi
-  resizer:
     requests:
       cpu: 20m
       memory: 32Mi
