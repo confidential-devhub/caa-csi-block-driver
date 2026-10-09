@@ -1,0 +1,11 @@
+.git
+bin
+charts
+deploy
+docs
+hack
+*.md
+LICENSE
+Makefile
+.github
+.gitignore

@@ -20,8 +20,8 @@ clean: ## Remove build artifacts
 	rm -rf bin/
 	rm -rf /tmp/csi-sanity-test/
 
-image: build ## Build the container image
-	podman build -t $(IMAGE_REPO):$(IMAGE_TAG) .
+image: ## Build the container image
+	podman build --build-arg VERSION=$(VERSION) -t $(IMAGE_REPO):$(IMAGE_TAG) .
 
 test: build ## Run csi-sanity conformance tests
 	@hack/run-csi-sanity.sh
