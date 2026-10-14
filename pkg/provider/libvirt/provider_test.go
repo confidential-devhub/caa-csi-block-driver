@@ -302,3 +302,116 @@ func TestCreateVolume_Idempotent(t *testing.T) {
 		t.Error("existing volume data should be preserved on reuse")
 	}
 }
+
+func TestSanitizeID(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"pvc-abc-123", "pvc-abc-123"},
+		{"../../../etc/cron.d/evil", "------etc-cron.d-evil"},
+		{"foo/bar", "foo-bar"},
+		{"normal-id", "normal-id"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := sanitizeID(tt.input)
+		if got != tt.want {
+			t.Errorf("sanitizeID(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestExpandVolume(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("expands existing volume", func(t *testing.T) {
+		p := newTestProvider(t)
+		if err := os.WriteFile(p.volumePath("vol-exp"), make([]byte, 1024), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := p.ExpandVolume(ctx, "vol-exp", 4096); err != nil {
+			t.Fatalf("ExpandVolume failed: %v", err)
+		}
+
+		info, err := os.Stat(p.volumePath("vol-exp"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != 4096 {
+			t.Errorf("size after expand = %d, want 4096", info.Size())
+		}
+	})
+
+	t.Run("errors on missing volume", func(t *testing.T) {
+		p := newTestProvider(t)
+		if err := p.ExpandVolume(ctx, "nonexistent", 4096); err == nil {
+			t.Fatal("expected error for missing volume")
+		}
+	})
+}
+
+func TestListManagedVolumes(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("empty dir returns empty", func(t *testing.T) {
+		p := newTestProvider(t)
+		vols, err := p.ListManagedVolumes(ctx)
+		if err != nil {
+			t.Fatalf("ListManagedVolumes failed: %v", err)
+		}
+		if len(vols) != 0 {
+			t.Errorf("expected 0 volumes, got %d", len(vols))
+		}
+	})
+
+	t.Run("lists volumes ignoring non-volume files", func(t *testing.T) {
+		p := newTestProvider(t)
+		if err := os.WriteFile(p.volumePath("pvc-aaa"), make([]byte, 2048), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p.volumePath("pvc-bbb"), make([]byte, 4096), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p.config.PoolPath, "random.txt"), []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		vols, err := p.ListManagedVolumes(ctx)
+		if err != nil {
+			t.Fatalf("ListManagedVolumes failed: %v", err)
+		}
+		if len(vols) != 2 {
+			t.Fatalf("expected 2 volumes, got %d", len(vols))
+		}
+
+		ids := map[string]bool{}
+		for _, v := range vols {
+			ids[v.VolumeID] = true
+			if v.Provider != "libvirt" {
+				t.Errorf("Provider = %q, want libvirt", v.Provider)
+			}
+		}
+		if !ids["pvc-aaa"] || !ids["pvc-bbb"] {
+			t.Errorf("expected volumes pvc-aaa and pvc-bbb, got %v", ids)
+		}
+	})
+
+	t.Run("extracts correct size", func(t *testing.T) {
+		p := newTestProvider(t)
+		if err := os.WriteFile(p.volumePath("sized-vol"), make([]byte, 8192), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		vols, err := p.ListManagedVolumes(ctx)
+		if err != nil {
+			t.Fatalf("ListManagedVolumes failed: %v", err)
+		}
+		if len(vols) != 1 {
+			t.Fatalf("expected 1 volume, got %d", len(vols))
+		}
+		if vols[0].SizeBytes != 8192 {
+			t.Errorf("SizeBytes = %d, want 8192", vols[0].SizeBytes)
+		}
+	})
+}
