@@ -172,14 +172,23 @@ spec:
 EOF
 ```
 
-Wait for the Operator to install:
+Wait for the Operator to install. First wait for the CSV to appear, then check its phase:
 
 ```bash
-oc wait --for=jsonpath='{.status.phase}'=Succeeded csv \
+# Wait for the CSV to be created (may take up to a minute)
+until oc get csv -n openshift-sandboxed-containers-operator 2>/dev/null | grep -q sandboxed-containers; do
+  echo "Waiting for CSV to appear..."
+  sleep 10
+done
+
+# Get the CSV name and wait for it to succeed
+CSV_NAME=$(oc get csv -n openshift-sandboxed-containers-operator -o name | head -1)
+oc wait --for=jsonpath='{.status.phase}'=Succeeded "$CSV_NAME" \
   -n openshift-sandboxed-containers-operator \
-  -l operators.coreos.com/sandboxed-containers-operator.openshift-sandboxed-containers-operator \
   --timeout=300s
 ```
+
+> **Note:** The label-based `oc wait` from older guides does not work here because OLM truncates the label to 63 characters.
 
 ## 6. Configure Peer Pods
 
@@ -260,18 +269,21 @@ oc get pods -n openshift-sandboxed-containers-operator -l name=osc-caa-ds
 ```bash
 helm install caa-csi-block-driver ./charts/caa-csi-block-driver \
   --set provider=azure \
+  --set image.tag=main \
   --set azure.subscriptionId=$SUBSCRIPTION_ID \
   --set azure.resourceGroup=$RESOURCE_GROUP \
   --set azure.location=$LOCATION
 ```
 
 > Replace `./charts/caa-csi-block-driver` with the path to your local clone of the [caa-csi-block-driver](https://github.com/confidential-devhub/caa-csi-block-driver) repository.
+>
+> The default image tag in `values.yaml` may not be published yet. Use `--set image.tag=main` to pull the latest build from the `main` branch.
 
 ### Grant privileged SCC
 
 ```bash
 oc adm policy add-scc-to-user privileged \
-  -z caa-csi-provisioner -n caa-csi-block
+  -z caa-csi-block-driver -n caa-csi-block
 ```
 
 ### Set Azure credentials
@@ -312,8 +324,10 @@ spec:
   resources:
     requests:
       storage: 1Gi
-  storageClassName: caa-block-azure
+  storageClassName: caa-csi-block-driver-azure
 ```
+
+> The StorageClass name follows the pattern `{release-name}-{provider}`. If you change the Helm release name, adjust the `storageClassName` accordingly. Run `oc get sc` to find the correct name.
 
 ```bash
 oc apply -f test-pvc.yaml
@@ -366,6 +380,8 @@ Verify the PodVM and Azure Managed Disk were created:
 az vm list --resource-group $RESOURCE_GROUP --output table
 az disk list --resource-group $RESOURCE_GROUP --output table
 ```
+
+> **Note:** Volume attach to PodVMs requires upstream CAA changes that may not be included in all OSC builds. Check your OSC version's release notes for volume support status.
 
 ## 10. Cleanup
 
