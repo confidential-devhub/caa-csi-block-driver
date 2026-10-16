@@ -11,11 +11,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
 
 var _ provider.VolumeCloner = (*LibvirtProvider)(nil)
+var _ provider.VolumeExpander = (*LibvirtProvider)(nil)
+var _ provider.VolumeRecoverer = (*LibvirtProvider)(nil)
 
 var logger = log.New(log.Writer(), "[caa-csi/libvirt] ", log.LstdFlags|log.Lmsgprefix)
 
@@ -25,7 +28,11 @@ func init() {
 	})
 }
 
-const defaultFsType = "ext4"
+const (
+	defaultFsType    = "ext4"
+	volumeFilePrefix = "csi-vol-"
+	rawSuffix        = ".raw"
+)
 
 type Config struct {
 	PoolPath string
@@ -50,8 +57,12 @@ func NewLibvirtProvider(params map[string]string) (*LibvirtProvider, error) {
 	}, nil
 }
 
+func sanitizeID(id string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(id, "/", "-"), "..", "-")
+}
+
 func (p *LibvirtProvider) volumePath(volumeID string) string {
-	return filepath.Join(p.config.PoolPath, fmt.Sprintf("csi-vol-%s.raw", volumeID))
+	return filepath.Join(p.config.PoolPath, volumeFilePrefix+sanitizeID(volumeID)+rawSuffix)
 }
 
 func (p *LibvirtProvider) CreateVolume(_ context.Context, volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
@@ -217,4 +228,51 @@ func (p *LibvirtProvider) CreateVolumeFromVolume(ctx context.Context, volumeID, 
 			"cloud-provider":    "libvirt",
 		},
 	}, nil
+}
+
+func (p *LibvirtProvider) ExpandVolume(_ context.Context, volumeID string, newSizeBytes int64) error {
+	volPath := p.volumePath(volumeID)
+	if _, err := os.Stat(volPath); err != nil {
+		return fmt.Errorf("volume %s not found at %s: %w", volumeID, volPath, err)
+	}
+	if err := os.Truncate(volPath, newSizeBytes); err != nil {
+		return fmt.Errorf("failed to expand volume %s to %d bytes: %w", volumeID, newSizeBytes, err)
+	}
+	logger.Printf("Expanded volume %s to %d bytes", volumeID, newSizeBytes)
+	return nil
+}
+
+func (p *LibvirtProvider) ListManagedVolumes(_ context.Context) ([]*provider.VolumeInfo, error) {
+	entries, err := os.ReadDir(p.config.PoolPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list volume directory: %w", err)
+	}
+
+	var vols []*provider.VolumeInfo
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, volumeFilePrefix) || !strings.HasSuffix(name, rawSuffix) {
+			continue
+		}
+		volID := strings.TrimPrefix(name, volumeFilePrefix)
+		volID = strings.TrimSuffix(volID, rawSuffix)
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		volPath := filepath.Join(p.config.PoolPath, name)
+		vols = append(vols, &provider.VolumeInfo{
+			VolumeID:  volID,
+			Path:      volPath,
+			SizeBytes: info.Size(),
+			Provider:  "libvirt",
+			Metadata: map[string]string{
+				"cloud-volume-path": volPath,
+				"cloud-provider":    "libvirt",
+			},
+		})
+	}
+	return vols, nil
 }
