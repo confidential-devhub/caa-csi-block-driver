@@ -153,7 +153,7 @@ func (p *AWSProvider) CreateVolume(ctx context.Context, volumeID string, sizeByt
 		return p.GetVolumeInfo(ctx, volumeID)
 	}
 
-	sizeGiB := int32(sizeBytes / (1024 * 1024 * 1024))
+	sizeGiB := int32((sizeBytes + 1024*1024*1024 - 1) / (1024 * 1024 * 1024))
 	if sizeGiB == 0 {
 		sizeGiB = 1
 	}
