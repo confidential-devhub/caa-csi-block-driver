@@ -63,7 +63,7 @@ spec:
               name: registration-dir
 
         - name: caa-csi-block-driver
-          image: 992382582441.dkr.ecr.us-east-2.amazonaws.com/caa-csi-block-driver:v0.2.0
+          image: ghcr.io/confidential-devhub/caa-csi-block-driver:main
           args:
             - "--drivername=caa-csi-block.csi.confidentialcontainers.io"
             - "--endpoint=unix:///csi/csi.sock"
