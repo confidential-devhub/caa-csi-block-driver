@@ -4,7 +4,7 @@ metadata:
   name: caa-block-libvirt
 parameters:
   cloudProvider: libvirt
-  cloudProviderVolumePath: /home/madnan/VirtualMachines
+  cloudProviderVolumePath: /var/lib/caa-csi-volumes
 provisioner: caa-csi-block.csi.confidentialcontainers.io
 reclaimPolicy: Delete
 volumeBindingMode: Immediate

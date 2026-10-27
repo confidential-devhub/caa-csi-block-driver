@@ -66,7 +66,7 @@ spec:
 
         # Main: caa-csi-block-driver
         - name: caa-csi-block-driver
-          image: localhost/caa-csi-block-driver:v0.1.0
+          image: ghcr.io/confidential-devhub/caa-csi-block-driver:main
           args:
             - "--drivername=caa-csi-block.csi.confidentialcontainers.io"
             - "--endpoint=unix:///csi/csi.sock"
@@ -89,7 +89,7 @@ spec:
               mountPropagation: Bidirectional
             - mountPath: /run/kata-containers/shared/direct-volumes
               name: shared-directvols
-            - mountPath: /home/madnan/VirtualMachines
+            - mountPath: /var/lib/caa-csi-volumes
               name: libvirt-pool
             - mountPath: /var/lib/caa-csi-block
               name: csi-data
@@ -117,7 +117,7 @@ spec:
             type: DirectoryOrCreate
         - name: libvirt-pool
           hostPath:
-            path: /home/madnan/VirtualMachines
+            path: /var/lib/caa-csi-volumes
             type: DirectoryOrCreate
         - name: csi-data
           hostPath:
