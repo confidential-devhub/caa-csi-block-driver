@@ -194,6 +194,13 @@ Snapshot lifecycle is supported via the `VolumeSnapshotter` interface:
   `DiskCreateOptionCopy`; `DeleteSnapshot` →
   `snapshotsClient.BeginDelete`; `ListSnapshots` →
   `snapshotsClient.NewListByResourceGroupPager` filtered by tag.
+- **IBM Cloud**: `CreateSnapshot` → VPC `CreateSnapshot` on the volume's native
+  ID, named after the CSI snapshot; `DeleteSnapshot` → VPC `DeleteSnapshot`;
+  `FindSnapshot`/`ListSnapshots` → VPC snapshot list filtered by name, source
+  volume, or resource group. The CSI snapshot ID is the native IBM snapshot ID;
+  the source volume name is recovered from the source volume's ownership tag.
+  Creating a volume from a snapshot (or cloning a volume through a temporary
+  snapshot) requires the snapshot to be `stable` (ready to use).
 
 ---
 
