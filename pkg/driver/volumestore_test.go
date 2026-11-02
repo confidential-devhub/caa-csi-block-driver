@@ -85,9 +85,9 @@ func TestWriteManifestSurvivesLastDelete(t *testing.T) {
 		Provider: "aws",
 		Path:     "vol-abc",
 		Params: map[string]string{
-			"cloudProvider":        "aws",
-			"awsRegion":            "us-east-2",
-			"awsAvailabilityZone":  "us-east-2a",
+			"cloudProvider":       "aws",
+			"awsRegion":           "us-east-2",
+			"awsAvailabilityZone": "us-east-2a",
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -107,6 +107,26 @@ func TestWriteManifestSurvivesLastDelete(t *testing.T) {
 	}
 	if exists {
 		t.Fatal("volume record should be deleted")
+	}
+}
+
+func TestBootstrapParamsIBMCloud(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CSI_VOLUME_STORE_DIR", dir)
+	t.Setenv("CSI_CLOUD_PROVIDER", "ibmcloud")
+	t.Setenv("CSI_IBM_REGION", "us-south")
+	t.Setenv("CSI_IBM_ZONE", "us-south-1")
+	t.Setenv("CSI_IBM_RESOURCE_GROUP", "rg-123")
+	t.Setenv("CSI_IBM_PROFILE", "custom")
+	t.Setenv("CSI_BOOTSTRAP_PARAMS_FILE", "")
+
+	vs := newVolumeStore()
+	params := vs.BootstrapParams()
+	if params == nil {
+		t.Fatal("expected non-nil bootstrap params")
+	}
+	if params["cloudProvider"] != "ibmcloud" || params["region"] != "us-south" || params["zone"] != "us-south-1" || params["resourceGroup"] != "rg-123" || params["profile"] != "custom" {
+		t.Fatalf("unexpected ibmcloud bootstrap params: %#v", params)
 	}
 }
 
