@@ -978,6 +978,9 @@ func (p *IBMCloudProvider) restorableSnapshotID(ctx context.Context, ref string,
 	return snap.SnapshotID, nil
 }
 
+// prefix of the form r<digits>- (e.g. "r006-", "r010-").
+var ibmNativeIDRegexp = regexp.MustCompile(`^r\d+-`)
+
 // resolveSnapshot finds a snapshot by CSI name first, then by native ID.
 // Returns nil, nil if neither exists.
 func (p *IBMCloudProvider) resolveSnapshot(ctx context.Context, ref string) (*provider.Snapshot, error) {
@@ -987,6 +990,10 @@ func (p *IBMCloudProvider) resolveSnapshot(ctx context.Context, ref string) (*pr
 	snap, err := p.findSnapshotByName(ctx, ref)
 	if err != nil || snap != nil {
 		return snap, err
+	}
+	// Only call GetSnapshot when ref is a IBM resourceID.
+	if !ibmNativeIDRegexp.MatchString(ref) {
+		return nil, nil
 	}
 	// The SDK reports every GetSnapshot failure as "snapshot ID not found";
 	// only the embedded backend error distinguishes a real absence.
