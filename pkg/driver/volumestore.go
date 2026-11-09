@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
@@ -22,6 +23,10 @@ const (
 	defaultVolumeStoreDir = "/var/lib/caa-csi-block/volumes"
 	manifestFileName      = "_manifest.json"
 	bootstrapParamsEnv    = "CSI_BOOTSTRAP_PARAMS_FILE"
+
+	// cloudRecoveryTimeout bounds the cloud list call made during recovery so a
+	// hung cloud API cannot block driver startup or an RPC indefinitely.
+	cloudRecoveryTimeout = 60 * time.Second
 )
 
 type volumeRecord struct {
@@ -50,7 +55,11 @@ func newVolumeStore() *volumeStore {
 	if dir == "" {
 		dir = defaultVolumeStoreDir
 	}
-	os.MkdirAll(dir, 0700)
+	// Non-fatal: later reads/writes surface a precise error, but log the root
+	// cause now so a misconfigured store directory is easy to diagnose.
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		vsLogger.Printf("WARNING: failed to create volume store dir %s: %v", dir, err)
+	}
 	return &volumeStore{dir: dir}
 }
 
@@ -98,7 +107,9 @@ func (vs *volumeStore) RecoverFromCloud(params map[string]string) error {
 		return nil
 	}
 
-	vols, err := lister.ListManagedVolumes(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), cloudRecoveryTimeout)
+	defer cancel()
+	vols, err := lister.ListManagedVolumes(ctx)
 	if err != nil {
 		return fmt.Errorf("listing managed volumes from cloud: %w", err)
 	}

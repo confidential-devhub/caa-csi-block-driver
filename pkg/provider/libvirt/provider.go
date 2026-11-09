@@ -54,7 +54,7 @@ func (p *LibvirtProvider) volumePath(volumeID string) string {
 	return filepath.Join(p.config.PoolPath, fmt.Sprintf("csi-vol-%s.raw", volumeID))
 }
 
-func (p *LibvirtProvider) CreateVolume(_ context.Context, volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
+func (p *LibvirtProvider) CreateVolume(ctx context.Context, volumeID string, sizeBytes int64) (*provider.VolumeInfo, error) {
 	volPath := p.volumePath(volumeID)
 
 	if _, err := os.Stat(volPath); os.IsNotExist(err) {
@@ -71,7 +71,7 @@ func (p *LibvirtProvider) CreateVolume(_ context.Context, volumeID string, sizeB
 		}
 		f.Close()
 
-		mkfsCmd := exec.Command("mkfs.ext4", "-F", "-m0", volPath)
+		mkfsCmd := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-m0", volPath)
 		if out, err := mkfsCmd.CombinedOutput(); err != nil {
 			os.Remove(volPath)
 			return nil, fmt.Errorf("failed to format %s as %s: %w (output: %s)", volPath, defaultFsType, err, string(out))
@@ -200,7 +200,7 @@ func (p *LibvirtProvider) CreateVolumeFromVolume(ctx context.Context, volumeID, 
 		// FS remains at the source's original size and the extra space is
 		// unreachable — Kubernetes won't trigger NodeExpandVolume because the
 		// reported capacity already matches the PVC request.
-		if out, err := exec.Command("resize2fs", dstPath).CombinedOutput(); err != nil {
+		if out, err := exec.CommandContext(ctx, "resize2fs", dstPath).CombinedOutput(); err != nil {
 			os.Remove(dstPath)
 			return nil, fmt.Errorf("failed to grow filesystem on cloned volume %s: %w (output: %s)", dstPath, err, string(out))
 		}
