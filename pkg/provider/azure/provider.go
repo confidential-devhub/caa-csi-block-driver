@@ -738,4 +738,3 @@ func (p *AzureProvider) FindSnapshot(ctx context.Context, snapshotID string) (*p
 		ReadyToUse:     result.Properties != nil && result.Properties.ProvisioningState != nil && *result.Properties.ProvisioningState == "Succeeded",
 	}, nil
 }
-

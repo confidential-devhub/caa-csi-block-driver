@@ -8,7 +8,7 @@ import "context"
 // VolumeInfo holds provider-agnostic metadata about a block volume.
 type VolumeInfo struct {
 	VolumeID  string
-	Path      string            // File path (Libvirt) or cloud volume ID (AWS EBS)
+	Path      string // File path (Libvirt) or cloud volume ID (AWS EBS)
 	SizeBytes int64
 	Provider  string            // "libvirt", "aws"
 	Metadata  map[string]string // Provider-specific data passed via mountInfo.json

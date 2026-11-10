@@ -37,6 +37,7 @@ const (
 	defaultVolumeType = "gp3"
 	volumeTagKey      = "caa-csi-volume-id"
 	waitTimeout       = 2 * time.Minute
+	configLoadTimeout = 30 * time.Second
 )
 
 type Config struct {
@@ -122,13 +123,18 @@ func newEC2Client(cfg Config) (*ec2.Client, error) {
 	var awsCfg aws.Config
 	var err error
 
+	// The provider factory has no caller context; bound config loading so a
+	// stuck shared-config/credential lookup cannot hang the RPC forever.
+	ctx, cancel := context.WithTimeout(context.Background(), configLoadTimeout)
+	defer cancel()
+
 	if cfg.AccessKeyId != "" && cfg.SecretKey != "" {
-		awsCfg, err = awsconfig.LoadDefaultConfig(context.TODO(),
+		awsCfg, err = awsconfig.LoadDefaultConfig(ctx,
 			awsconfig.WithCredentialsProvider(
 				credentials.NewStaticCredentialsProvider(cfg.AccessKeyId, cfg.SecretKey, "")),
 			awsconfig.WithRegion(cfg.Region))
 	} else {
-		awsCfg, err = awsconfig.LoadDefaultConfig(context.TODO(),
+		awsCfg, err = awsconfig.LoadDefaultConfig(ctx,
 			awsconfig.WithRegion(cfg.Region))
 	}
 	if err != nil {
@@ -205,10 +211,10 @@ func (p *AWSProvider) CreateVolume(ctx context.Context, volumeID string, sizeByt
 		SizeBytes: sizeBytes,
 		Provider:  "aws",
 		Metadata: map[string]string{
-			"cloud-volume-path":  ebsVolumeID,
-			"cloud-provider":     "aws",
-			"ebs-volume-id":      ebsVolumeID,
-			"availability-zone":  p.config.AvailabilityZone,
+			"cloud-volume-path": ebsVolumeID,
+			"cloud-provider":    "aws",
+			"ebs-volume-id":     ebsVolumeID,
+			"availability-zone": p.config.AvailabilityZone,
 		},
 	}, nil
 }
@@ -257,10 +263,10 @@ func (p *AWSProvider) GetVolumeInfo(ctx context.Context, volumeID string) (*prov
 		SizeBytes: int64(*vol.Size) * 1024 * 1024 * 1024,
 		Provider:  "aws",
 		Metadata: map[string]string{
-			"cloud-volume-path":  ebsVolumeID,
-			"cloud-provider":     "aws",
-			"ebs-volume-id":      ebsVolumeID,
-			"availability-zone":  aws.ToString(vol.AvailabilityZone),
+			"cloud-volume-path": ebsVolumeID,
+			"cloud-provider":    "aws",
+			"ebs-volume-id":     ebsVolumeID,
+			"availability-zone": aws.ToString(vol.AvailabilityZone),
 		},
 	}, nil
 }

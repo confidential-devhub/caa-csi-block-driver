@@ -85,9 +85,9 @@ func TestWriteManifestSurvivesLastDelete(t *testing.T) {
 		Provider: "aws",
 		Path:     "vol-abc",
 		Params: map[string]string{
-			"cloudProvider":        "aws",
-			"awsRegion":            "us-east-2",
-			"awsAvailabilityZone":  "us-east-2a",
+			"cloudProvider":       "aws",
+			"awsRegion":           "us-east-2",
+			"awsAvailabilityZone": "us-east-2a",
 		},
 	}); err != nil {
 		t.Fatal(err)
