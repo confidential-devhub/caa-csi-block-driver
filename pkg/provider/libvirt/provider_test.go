@@ -302,3 +302,150 @@ func TestCreateVolume_Idempotent(t *testing.T) {
 		t.Error("existing volume data should be preserved on reuse")
 	}
 }
+
+func TestValidateID(t *testing.T) {
+	t.Run("accepts normal IDs", func(t *testing.T) {
+		for _, id := range []string{"pvc-abc-123", "normal-id", "vol-0", ""} {
+			if err := validateID(id); err != nil {
+				t.Errorf("validateID(%q) should pass: %v", id, err)
+			}
+		}
+	})
+
+	t.Run("rejects path traversal", func(t *testing.T) {
+		for _, id := range []string{"../../../etc/passwd", "foo/bar", "a..b"} {
+			if err := validateID(id); err == nil {
+				t.Errorf("validateID(%q) should fail", id)
+			}
+		}
+	})
+}
+
+func TestExpandVolume(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("expands existing volume", func(t *testing.T) {
+		p := newTestProvider(t)
+		if err := os.WriteFile(p.volumePath("vol-exp"), make([]byte, 1024), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := p.ExpandVolume(ctx, "vol-exp", 4096); err != nil {
+			t.Fatalf("ExpandVolume failed: %v", err)
+		}
+
+		info, err := os.Stat(p.volumePath("vol-exp"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != 4096 {
+			t.Errorf("size after expand = %d, want 4096", info.Size())
+		}
+	})
+
+	t.Run("errors on missing volume", func(t *testing.T) {
+		p := newTestProvider(t)
+		if err := p.ExpandVolume(ctx, "nonexistent", 4096); err == nil {
+			t.Fatal("expected error for missing volume")
+		}
+	})
+
+	t.Run("skips when already large enough", func(t *testing.T) {
+		p := newTestProvider(t)
+		if err := os.WriteFile(p.volumePath("vol-big"), make([]byte, 8192), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := p.ExpandVolume(ctx, "vol-big", 4096); err != nil {
+			t.Fatalf("ExpandVolume should succeed: %v", err)
+		}
+
+		info, err := os.Stat(p.volumePath("vol-big"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != 8192 {
+			t.Errorf("size should stay at 8192, got %d", info.Size())
+		}
+	})
+}
+
+func TestListManagedVolumes(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("empty dir returns empty", func(t *testing.T) {
+		p := newTestProvider(t)
+		vols, err := p.ListManagedVolumes(ctx)
+		if err != nil {
+			t.Fatalf("ListManagedVolumes failed: %v", err)
+		}
+		if len(vols) != 0 {
+			t.Errorf("expected 0 volumes, got %d", len(vols))
+		}
+	})
+
+	t.Run("lists volumes ignoring non-volume files", func(t *testing.T) {
+		p := newTestProvider(t)
+		if err := os.WriteFile(p.volumePath("pvc-aaa"), make([]byte, 2048), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p.volumePath("pvc-bbb"), make([]byte, 4096), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p.config.PoolPath, "random.txt"), []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		vols, err := p.ListManagedVolumes(ctx)
+		if err != nil {
+			t.Fatalf("ListManagedVolumes failed: %v", err)
+		}
+		if len(vols) != 2 {
+			t.Fatalf("expected 2 volumes, got %d", len(vols))
+		}
+
+		ids := map[string]bool{}
+		for _, v := range vols {
+			ids[v.VolumeID] = true
+			if v.Provider != "libvirt" {
+				t.Errorf("Provider = %q, want libvirt", v.Provider)
+			}
+		}
+		if !ids["pvc-aaa"] || !ids["pvc-bbb"] {
+			t.Errorf("expected volumes pvc-aaa and pvc-bbb, got %v", ids)
+		}
+	})
+
+	t.Run("extracts correct size", func(t *testing.T) {
+		p := newTestProvider(t)
+		if err := os.WriteFile(p.volumePath("sized-vol"), make([]byte, 8192), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		vols, err := p.ListManagedVolumes(ctx)
+		if err != nil {
+			t.Fatalf("ListManagedVolumes failed: %v", err)
+		}
+		if len(vols) != 1 {
+			t.Fatalf("expected 1 volume, got %d", len(vols))
+		}
+		if vols[0].SizeBytes != 8192 {
+			t.Errorf("SizeBytes = %d, want 8192", vols[0].SizeBytes)
+		}
+	})
+
+	t.Run("skips directories with matching name", func(t *testing.T) {
+		p := newTestProvider(t)
+		if err := os.Mkdir(filepath.Join(p.config.PoolPath, "csi-vol-fake.raw"), 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		vols, err := p.ListManagedVolumes(ctx)
+		if err != nil {
+			t.Fatalf("ListManagedVolumes failed: %v", err)
+		}
+		if len(vols) != 0 {
+			t.Errorf("expected 0 volumes, got %d", len(vols))
+		}
+	})
+}

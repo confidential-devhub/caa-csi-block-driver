@@ -68,8 +68,8 @@ jobs:
           go-version-file: go.mod
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: v1.64.8
+          version: v2.15.0
           # Existing findings should not block unrelated PRs; new code must be clean.
           only-new-issues: true
