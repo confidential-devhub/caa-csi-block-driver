@@ -19,6 +19,7 @@ import (
 
 type fakeSession struct {
 	provider.Session
+	fakeSnapshots
 	volumes            []*provider.Volume
 	listErr, createErr error
 	createResult       func(provider.Volume) *provider.Volume

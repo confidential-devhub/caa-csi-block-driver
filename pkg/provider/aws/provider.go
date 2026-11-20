@@ -205,10 +205,10 @@ func (p *AWSProvider) CreateVolume(ctx context.Context, volumeID string, sizeByt
 		SizeBytes: sizeBytes,
 		Provider:  "aws",
 		Metadata: map[string]string{
-			"cloud-volume-path":  ebsVolumeID,
-			"cloud-provider":     "aws",
-			"ebs-volume-id":      ebsVolumeID,
-			"availability-zone":  p.config.AvailabilityZone,
+			"cloud-volume-path": ebsVolumeID,
+			"cloud-provider":    "aws",
+			"ebs-volume-id":     ebsVolumeID,
+			"availability-zone": p.config.AvailabilityZone,
 		},
 	}, nil
 }
@@ -257,10 +257,10 @@ func (p *AWSProvider) GetVolumeInfo(ctx context.Context, volumeID string) (*prov
 		SizeBytes: int64(*vol.Size) * 1024 * 1024 * 1024,
 		Provider:  "aws",
 		Metadata: map[string]string{
-			"cloud-volume-path":  ebsVolumeID,
-			"cloud-provider":     "aws",
-			"ebs-volume-id":      ebsVolumeID,
-			"availability-zone":  aws.ToString(vol.AvailabilityZone),
+			"cloud-volume-path": ebsVolumeID,
+			"cloud-provider":    "aws",
+			"ebs-volume-id":     ebsVolumeID,
+			"availability-zone": aws.ToString(vol.AvailabilityZone),
 		},
 	}, nil
 }

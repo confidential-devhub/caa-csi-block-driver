@@ -390,6 +390,11 @@ func paramsFromEnv() map[string]string {
 		setIfNonEmpty(params, "azureDiskEncryptionSetId", os.Getenv("CSI_AZURE_DISK_ENCRYPTION_SET_ID"))
 	case "libvirt":
 		setIfNonEmpty(params, "cloudProviderVolumePath", firstNonEmpty(os.Getenv("CSI_LIBVIRT_VOLUME_PATH"), os.Getenv("CLOUD_PROVIDER_VOLUME_PATH")))
+	case "ibmcloud":
+		setIfNonEmpty(params, "region", firstNonEmpty(os.Getenv("CSI_IBM_REGION"), os.Getenv("IBM_REGION"), os.Getenv("CSI_TOPOLOGY_REGION"), os.Getenv("REGION")))
+		setIfNonEmpty(params, "zone", firstNonEmpty(os.Getenv("CSI_IBM_ZONE"), os.Getenv("IBM_ZONE"), os.Getenv("CSI_TOPOLOGY_ZONE"), os.Getenv("ZONE")))
+		setIfNonEmpty(params, "resourceGroup", firstNonEmpty(os.Getenv("CSI_IBM_RESOURCE_GROUP"), os.Getenv("IBM_RESOURCE_GROUP"), os.Getenv("IBMCLOUD_RESOURCE_GROUP_ID")))
+		setIfNonEmpty(params, "profile", firstNonEmpty(os.Getenv("CSI_IBM_PROFILE"), os.Getenv("IBM_PROFILE")))
 	}
 
 	vsLogger.Printf("Loaded bootstrap params from environment (provider=%s)", cloudProvider)

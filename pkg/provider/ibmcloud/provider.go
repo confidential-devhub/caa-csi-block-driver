@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -30,6 +32,8 @@ var logger = log.New(log.Writer(), "[caa-csi/ibmcloud] ", log.LstdFlags|log.Lmsg
 var _ caaProvider.BlockVolumeProvider = (*IBMCloudProvider)(nil)
 var _ caaProvider.VolumeExpander = (*IBMCloudProvider)(nil)
 var _ caaProvider.VolumeRecoverer = (*IBMCloudProvider)(nil)
+var _ caaProvider.VolumeSnapshotter = (*IBMCloudProvider)(nil)
+var _ caaProvider.VolumeCloner = (*IBMCloudProvider)(nil)
 
 func init() {
 	// Register the ibmcloud provider with the CSI Driver factory
@@ -252,6 +256,12 @@ func resolveResourceGroup(explicit, configured string) (string, error) {
 
 // CreateVolume provisions a new VPC Block Volume using the ibmcloud-volume-vpc SDK.
 func (p *IBMCloudProvider) CreateVolume(ctx context.Context, volumeID string, sizeBytes int64) (*caaProvider.VolumeInfo, error) {
+	return p.createVolume(ctx, volumeID, sizeBytes, "")
+}
+
+// createVolume implements CreateVolume. When snapshotRef (a snapshot name or
+// native ID) is non-empty, the new volume is restored from that snapshot.
+func (p *IBMCloudProvider) createVolume(ctx context.Context, volumeID string, sizeBytes int64, snapshotRef string) (*caaProvider.VolumeInfo, error) {
 	if p.config.Zone == "" {
 		return nil, fmt.Errorf("zone (or ibmZone) parameter is required to create a new volume")
 	}
@@ -263,22 +273,15 @@ func (p *IBMCloudProvider) CreateVolume(ctx context.Context, volumeID string, si
 	if err != nil {
 		return nil, err
 	}
-	vol, err := p.lookupVolume(ctx, volumeID)
-	if err != nil && !errors.Is(err, caaProvider.ErrVolumeNotFound) {
-		return nil, err
+	if info, err := p.existingVolumeInfo(ctx, volumeID, allocated); err != nil || info != nil {
+		return info, err
 	}
-	if vol != nil {
-		if err := p.checkOwnedVolume(vol, volumeID); err != nil {
-			return nil, err
-		}
-		info, err := volumeInfo(vol)
+	var sourceSnapshotID string
+	if snapshotRef != "" {
+		sourceSnapshotID, err = p.restorableSnapshotID(ctx, snapshotRef, allocated)
 		if err != nil {
 			return nil, err
 		}
-		if info.SizeBytes < allocated {
-			return nil, fmt.Errorf("%w: %s is smaller than requested", caaProvider.ErrVolumeAlreadyExists, volumeID)
-		}
-		return info, nil
 	}
 	sizeGB := int(allocated / gib)
 
@@ -314,6 +317,10 @@ func (p *IBMCloudProvider) CreateVolume(ctx context.Context, volumeID string, si
 		volRequest.VPCVolume.ResourceGroup = &provider.ResourceGroup{
 			ID: p.config.ResourceGroup,
 		}
+	}
+
+	if sourceSnapshotID != "" {
+		volRequest.SnapshotID = sourceSnapshotID
 	}
 
 	// The parser retains IOPS only for custom and SDP profiles.
@@ -352,7 +359,33 @@ func (p *IBMCloudProvider) CreateVolume(ctx context.Context, volumeID string, si
 	if info.VolumeID != volumeID || info.SizeBytes < allocated {
 		return nil, fmt.Errorf("IBM create response does not match the requested name/capacity")
 	}
+	if sourceSnapshotID != "" {
+		info.Metadata["source-snapshot"] = sourceSnapshotID
+	}
 	logger.Printf("Created IBM VPC Volume %s (vpc-id=%s)", volumeID, info.Path)
+	return info, nil
+}
+
+// existingVolumeInfo returns the already-provisioned volume for volumeID, or
+// nil, nil if it does not exist. It makes volume creation idempotent.
+func (p *IBMCloudProvider) existingVolumeInfo(ctx context.Context, volumeID string, allocated int64) (*caaProvider.VolumeInfo, error) {
+	vol, err := p.lookupVolume(ctx, volumeID)
+	if errors.Is(err, caaProvider.ErrVolumeNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := p.checkOwnedVolume(vol, volumeID); err != nil {
+		return nil, err
+	}
+	info, err := volumeInfo(vol)
+	if err != nil {
+		return nil, err
+	}
+	if info.SizeBytes < allocated {
+		return nil, fmt.Errorf("%w: %s is smaller than requested", caaProvider.ErrVolumeAlreadyExists, volumeID)
+	}
 	return info, nil
 }
 
@@ -666,4 +699,332 @@ func (p *IBMCloudProvider) ListManagedVolumes(ctx context.Context) ([]*caaProvid
 	}
 
 	return vols, nil
+}
+
+// Snapshot readiness polling used when an operation needs a stable snapshot
+// (e.g. cloning a volume through a temporary snapshot).
+var snapshotPollInterval = 5 * time.Second
+
+const snapshotReadyTimeout = 5 * time.Minute
+
+// The pinned SDK's snapshot model drops names and tags, so snapshots are
+// identified as follows:
+//   - CSI snapshot IDs returned to Kubernetes are the native IBM snapshot IDs.
+//   - A CSI snapshot name is resolved with the server-side exact-name filter.
+//   - The source CSI volume name is recovered from the source volume's
+//     ownership tag; snapshots whose source volume is gone cannot be attributed.
+
+// CreateSnapshot creates a VPC snapshot named snapshotID from the CSI volume volumeID.
+// It does not wait for the snapshot to become stable; ReadyToUse reports its state.
+func (p *IBMCloudProvider) CreateSnapshot(ctx context.Context, volumeID, snapshotID string) (*caaProvider.SnapshotInfo, error) {
+	if snapshotID == "" {
+		return nil, fmt.Errorf("%w: empty snapshot name", caaProvider.ErrInvalidParameters)
+	}
+	vol, err := p.lookupVolume(ctx, volumeID)
+	if err != nil {
+		return nil, fmt.Errorf("cannot find IBM volume for snapshot: %w", err)
+	}
+	if err := p.checkOwnedVolume(vol, volumeID); err != nil {
+		return nil, err
+	}
+	if vol.VolumeID == "" {
+		return nil, fmt.Errorf("IBM volume has no native ID")
+	}
+
+	existing, err := p.findSnapshotByName(ctx, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		if existing.VolumeID != vol.VolumeID {
+			return nil, fmt.Errorf("%w: snapshot %s exists for a different source volume", caaProvider.ErrVolumeAlreadyExists, snapshotID)
+		}
+		return snapshotInfo(existing, volumeID), nil
+	}
+
+	logger.Printf("Creating IBM VPC snapshot %s from volume %s (vpc-id=%s)", snapshotID, volumeID, vol.VolumeID)
+	snap, err := p.session.CreateSnapshot(vol.VolumeID, provider.SnapshotParameters{
+		Name:          snapshotID,
+		ResourceGroup: p.config.ResourceGroup,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to CreateSnapshot via ibmcloud-volume-vpc SDK: %w", err)
+	}
+	if snap == nil || snap.SnapshotID == "" {
+		return nil, fmt.Errorf("incomplete IBM snapshot response")
+	}
+	return snapshotInfo(snap, volumeID), nil
+}
+
+// DeleteSnapshot deletes a snapshot by CSI snapshot name or native ID.
+// A snapshot that does not exist is not an error.
+func (p *IBMCloudProvider) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	snap, err := p.resolveSnapshot(ctx, snapshotID)
+	if err != nil {
+		return fmt.Errorf("failed to look up snapshot %s for deletion: %w", snapshotID, err)
+	}
+	if snap == nil {
+		logger.Printf("Snapshot %s not found, nothing to delete (idempotent)", snapshotID)
+		return nil
+	}
+
+	logger.Printf("Deleting IBM VPC snapshot %s (vpc-id=%s)", snapshotID, snap.SnapshotID)
+	if err := p.session.DeleteSnapshot(&provider.Snapshot{SnapshotID: snap.SnapshotID}); err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to DeleteSnapshot via ibmcloud-volume-vpc SDK: %w", err)
+	}
+	return nil
+}
+
+// ListSnapshots lists snapshots of the CSI volume volumeID, or, when volumeID is
+// empty, all snapshots in the configured resource group whose source volume is
+// owned by this driver.
+func (p *IBMCloudProvider) ListSnapshots(ctx context.Context, volumeID string) ([]*caaProvider.SnapshotInfo, error) {
+	filters := map[string]string{"resource_group.id": p.config.ResourceGroup}
+	if volumeID != "" {
+		vol, err := p.lookupVolume(ctx, volumeID)
+		if errors.Is(err, caaProvider.ErrVolumeNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := p.checkOwnedVolume(vol, volumeID); err != nil {
+			return nil, err
+		}
+		filters["source_volume.id"] = vol.VolumeID
+	}
+
+	snaps, err := p.listSnapshots(ctx, filters)
+	if err != nil {
+		return nil, err
+	}
+	sourceNames := map[string]string{}
+	var infos []*caaProvider.SnapshotInfo
+	for _, snap := range snaps {
+		sourceName := volumeID
+		if sourceName == "" {
+			if sourceName, err = p.sourceVolumeName(snap.VolumeID, sourceNames); err != nil {
+				return nil, err
+			}
+			if sourceName == "" {
+				continue // Not provably ours.
+			}
+		}
+		infos = append(infos, snapshotInfo(snap, sourceName))
+	}
+	return infos, nil
+}
+
+// FindSnapshot looks up a snapshot by CSI snapshot name or native ID.
+// Returns nil, nil if the snapshot does not exist.
+func (p *IBMCloudProvider) FindSnapshot(ctx context.Context, snapshotID string) (*caaProvider.SnapshotInfo, error) {
+	snap, err := p.resolveSnapshot(ctx, snapshotID)
+	if err != nil || snap == nil {
+		return nil, err
+	}
+	sourceName, err := p.sourceVolumeName(snap.VolumeID, map[string]string{})
+	if err != nil {
+		return nil, err
+	}
+	return snapshotInfo(snap, sourceName), nil
+}
+
+// CreateVolumeFromSnapshot restores a new volume from an existing snapshot.
+func (p *IBMCloudProvider) CreateVolumeFromSnapshot(ctx context.Context, volumeID, snapshotID string, sizeBytes int64) (*caaProvider.VolumeInfo, error) {
+	return p.createVolume(ctx, volumeID, sizeBytes, snapshotID)
+}
+
+// CreateVolumeFromVolume clones a volume by taking a temporary snapshot of the
+// source, restoring a new volume from it, and deleting the temporary snapshot.
+func (p *IBMCloudProvider) CreateVolumeFromVolume(ctx context.Context, volumeID, sourceVolumeID string, sizeBytes int64) (*caaProvider.VolumeInfo, error) {
+	if volumeID == "" {
+		return nil, fmt.Errorf("%w: empty volume name", caaProvider.ErrInvalidParameters)
+	}
+	allocated, err := p.NormalizeCapacity(sizeBytes)
+	if err != nil {
+		return nil, err
+	}
+	if info, err := p.existingVolumeInfo(ctx, volumeID, allocated); err != nil || info != nil {
+		return info, err
+	}
+
+	tempName := "clone-" + volumeID
+	logger.Printf("Cloning volume %s -> %s via temporary snapshot %s", sourceVolumeID, volumeID, tempName)
+	snapInfo, err := p.CreateSnapshot(ctx, sourceVolumeID, tempName)
+	if err != nil {
+		return nil, fmt.Errorf("creating temp snapshot for clone: %w", err)
+	}
+	cleanup := func() {
+		if err := p.DeleteSnapshot(ctx, snapInfo.SnapshotID); err != nil {
+			logger.Printf("WARNING: failed to clean up temp clone snapshot %s: %v", tempName, err)
+		}
+	}
+
+	if err := p.waitSnapshotReady(ctx, snapInfo.SnapshotID); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("temp snapshot %s not ready: %w", tempName, err)
+	}
+	volInfo, err := p.createVolume(ctx, volumeID, sizeBytes, snapInfo.SnapshotID)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("creating volume from temp snapshot: %w", err)
+	}
+	cleanup()
+	return volInfo, nil
+}
+
+func (p *IBMCloudProvider) waitSnapshotReady(ctx context.Context, nativeID string) error {
+	ctx, cancel := context.WithTimeout(ctx, snapshotReadyTimeout)
+	defer cancel()
+	for {
+		snap, err := p.session.GetSnapshot(nativeID)
+		if err != nil {
+			return err
+		}
+		if snap != nil && snap.ReadyToUse {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(snapshotPollInterval):
+		}
+	}
+}
+
+// restorableSnapshotID resolves ref and verifies it can seed a volume of the given size.
+func (p *IBMCloudProvider) restorableSnapshotID(ctx context.Context, ref string, allocated int64) (string, error) {
+	snap, err := p.resolveSnapshot(ctx, ref)
+	if err != nil {
+		return "", err
+	}
+	if snap == nil {
+		return "", fmt.Errorf("snapshot %s not found", ref)
+	}
+	if !snap.ReadyToUse {
+		return "", fmt.Errorf("IBM snapshot %s is not ready; retry later", snap.SnapshotID)
+	}
+	if snap.SnapshotSize > allocated {
+		return "", fmt.Errorf("%w: volume size is smaller than snapshot %s", caaProvider.ErrInvalidParameters, snap.SnapshotID)
+	}
+	return snap.SnapshotID, nil
+}
+
+// prefix of the form r<digits>- (e.g. "r006-", "r010-").
+var ibmNativeIDRegexp = regexp.MustCompile(`^r\d+-`)
+
+// resolveSnapshot finds a snapshot by CSI name first, then by native ID.
+// Returns nil, nil if neither exists.
+func (p *IBMCloudProvider) resolveSnapshot(ctx context.Context, ref string) (*provider.Snapshot, error) {
+	if ref == "" {
+		return nil, fmt.Errorf("%w: empty snapshot ID", caaProvider.ErrInvalidParameters)
+	}
+	snap, err := p.findSnapshotByName(ctx, ref)
+	if err != nil || snap != nil {
+		return snap, err
+	}
+	// Only call GetSnapshot when ref is a IBM resourceID.
+	if !ibmNativeIDRegexp.MatchString(ref) {
+		return nil, nil
+	}
+	// The SDK reports every GetSnapshot failure as "snapshot ID not found";
+	// only the embedded backend error distinguishes a real absence.
+	snap, err = p.session.GetSnapshot(ref)
+	if err != nil {
+		var message providerError.Message
+		if isNotFound(err) && errors.As(err, &message) && strings.Contains(strings.ToLower(message.BackendError), "not_found") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("looking up IBM snapshot %s: %w", ref, err)
+	}
+	return snap, nil
+}
+
+// findSnapshotByName uses the server-side exact-name filter. Returns nil, nil if absent.
+func (p *IBMCloudProvider) findSnapshotByName(ctx context.Context, name string) (*provider.Snapshot, error) {
+	snaps, err := p.listSnapshots(ctx, map[string]string{"name": name})
+	if err != nil {
+		return nil, err
+	}
+	if len(snaps) > 1 {
+		return nil, fmt.Errorf("%w: ambiguous snapshot name %s", caaProvider.ErrVolumeAlreadyExists, name)
+	}
+	if len(snaps) == 0 {
+		return nil, nil
+	}
+	return snaps[0], nil
+}
+
+func (p *IBMCloudProvider) listSnapshots(ctx context.Context, filters map[string]string) ([]*provider.Snapshot, error) {
+	var snaps []*provider.Snapshot
+	seen := map[string]bool{}
+	for start := ""; ; {
+		if seen[start] {
+			return nil, fmt.Errorf("IBM snapshot list returned a repeated pagination token")
+		}
+		seen[start] = true
+		page, err := p.session.ListSnapshots(100, start, filters)
+		if err != nil {
+			return nil, fmt.Errorf("listing IBM snapshots: %w", err)
+		}
+		if page == nil {
+			return nil, fmt.Errorf("IBM snapshot list returned a nil response")
+		}
+		for _, snap := range page.Snapshots {
+			if snap != nil {
+				snaps = append(snaps, snap)
+			}
+		}
+		if page.Next == "" {
+			return snaps, nil
+		}
+		start = page.Next
+	}
+}
+
+// sourceVolumeName maps a native volume ID to the CSI volume name recorded in
+// its ownership tag. It returns "" if the volume is gone or not owned by this
+// driver. Results are memoised in cache.
+func (p *IBMCloudProvider) sourceVolumeName(nativeID string, cache map[string]string) (string, error) {
+	if nativeID == "" {
+		return "", nil
+	}
+	if name, ok := cache[nativeID]; ok {
+		return name, nil
+	}
+	name := ""
+	vol, err := p.session.GetVolume(nativeID)
+	switch {
+	case err == nil && vol != nil:
+		for _, tag := range vol.Tags {
+			if strings.HasPrefix(tag, ownershipTagPrefix) {
+				if name != "" {
+					name = "" // ambiguous ownership
+					break
+				}
+				name = strings.TrimPrefix(tag, ownershipTagPrefix)
+			}
+		}
+	case err != nil && !isNotFound(err):
+		return "", fmt.Errorf("resolving snapshot source volume %s: %w", nativeID, err)
+	}
+	cache[nativeID] = name
+	return name, nil
+}
+
+func snapshotInfo(snap *provider.Snapshot, sourceVolumeName string) *caaProvider.SnapshotInfo {
+	var created int64
+	if !snap.SnapshotCreationTime.IsZero() {
+		created = snap.SnapshotCreationTime.Unix()
+	}
+	return &caaProvider.SnapshotInfo{
+		SnapshotID:     snap.SnapshotID,
+		SourceVolumeID: sourceVolumeName,
+		SizeBytes:      snap.SnapshotSize,
+		CreationTime:   created,
+		ReadyToUse:     snap.ReadyToUse,
+	}
 }
