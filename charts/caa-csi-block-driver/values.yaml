@@ -68,7 +68,7 @@ ibmcloud:
   # comma-separated extra tags for each volume
   tags: ""
   secretSidecar:
-    image: icr.io/obs/armada-storage-secret:v1.3.64
+    image: icr.io/obs/armada-storage-secret:v1.3.69
     resources:
       requests:
         cpu: 10m

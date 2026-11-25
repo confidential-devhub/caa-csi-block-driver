@@ -2,17 +2,17 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: caa-csi-block-plugin
-  namespace: kube-system
+  namespace: caa-csi-block
   labels:
-    app: kube-system
+    app: caa-csi-block
 spec:
   selector:
     matchLabels:
-      app: kube-system
+      app: caa-csi-block
   template:
     metadata:
       labels:
-        app: kube-system
+        app: caa-csi-block
     spec:
       serviceAccountName: caa-csi-provisioner
       containers:
@@ -115,7 +115,7 @@ spec:
               readOnly: true
         # Provides short-lived IBM credentials to the driver over provider.sock.
         - name: storage-secret-sidecar
-          image: icr.io/obs/armada-storage-secret:v1.3.65
+          image: icr.io/obs/armada-storage-secret:v1.3.69
           args:
             - "--endpoint=unix:/sidecardir/provider.sock"
           env:
