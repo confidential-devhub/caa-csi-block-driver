@@ -228,9 +228,21 @@ On ROKS, grant the privileged SCC to the service account:
 oc adm policy add-scc-to-user privileged -z caa-csi-provisioner -n caa-csi-block
 ```
 
-The raw manifests `deploy/daemonset-ibmcloud.yaml` and `deploy/rbac.yaml` target
-`kube-system` instead, where the credential objects already exist. The Helm
-install above is the tested path.
+#### Install with manifests
+
+As an alternative to the chart, after the copy step above:
+
+```bash
+kubectl apply -f deploy/rbac.yaml
+kubectl apply -f deploy/csi-driver.yaml
+# Edit daemonset-ibmcloud.yaml to point at your driver image first
+kubectl apply -f deploy/daemonset-ibmcloud.yaml
+# Edit storageclass-ibmcloud.yaml with your region and zone first
+kubectl apply -f deploy/storageclass-ibmcloud.yaml
+```
+
+`deploy/rbac.yaml` already grants the privileged SCC on OpenShift, so the
+`oc adm policy` step is not needed here. The Helm install is the tested path.
 
 #### StorageClass parameters
 
@@ -257,11 +269,17 @@ for the `sdp` profile.
 #### Verify
 
 ```bash
-kubectl get pods -n caa-csi-block -l app.kubernetes.io/instance=caa-csi
 kubectl get storageclass caa-csi-ibmcloud
 kubectl get pvc <pvc-name>     # expect Bound
 kubectl get pod <pod-name>     # expect Running
+
+# Helm install
+kubectl get pods -n caa-csi-block -l app.kubernetes.io/instance=caa-csi
 kubectl logs -n caa-csi-block -l app.kubernetes.io/name=caa-csi-block-driver -c caa-csi-block-driver
+
+# Manifest install
+kubectl get pods -n caa-csi-block -l app=caa-csi-block
+kubectl logs -n caa-csi-block -l app=caa-csi-block -c caa-csi-block-driver
 ```
 
 ### Testing a Volume
