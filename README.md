@@ -15,17 +15,6 @@ for volume attachment to PodVMs.
 | **Libvirt** | Raw disk files | N/A (local) | Supported (dev/test) |
 | **IBM Cloud VPC** | VPC Block Storage | Cluster credential store (`storage-secret-store`) | Supported (tested on ROKS) |
 
-### Features
-
-| Feature | AWS | Azure | IBM Cloud VPC | Libvirt |
-|---------|-----|-------|---------------|---------|
-| Create / delete volume | Yes | Yes | Yes | Yes |
-| Volume expansion | Yes | Yes | Yes | Yes |
-| Snapshots (create, delete, list) | Yes | Yes | Yes | No |
-| Volume from snapshot | Yes | Yes | Yes | No |
-| Volume clone | Yes | Yes | Yes | Yes |
-| Volume recovery after store loss | Yes | Yes | Yes | Yes |
-
 The following applies to every provider:
 
 - The manifests and Helm chart deploy the `csi-provisioner` and
