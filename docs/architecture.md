@@ -37,6 +37,10 @@ after the instance reaches `running` state).
    volume path (a cloud volume ID for AWS/Azure, or a local device for libvirt).
 5. kubelet calls `NodePublishVolume` → CSI driver writes a `mountInfo.json`
    file under the Kata direct-volumes path so the CAA proxy can read it.
+   When the pod sets `fsGroup`, kubelet passes it as `VolumeMountGroup`
+   (the driver advertises `VOLUME_MOUNT_GROUP`) and the driver records it in
+   the `fsGroup` metadata key for the PodVM to apply. Kubelet does not chown
+   the target path itself, since that is an empty directory on the node.
 
 ### 2. PodVM Attachment
 

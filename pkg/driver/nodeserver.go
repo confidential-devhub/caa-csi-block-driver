@@ -30,6 +30,11 @@ const (
 	defaultKataDirectVolumeRootPath = "/run/kata-containers/shared/direct-volumes"
 	mountInfoFileName               = "mountInfo.json"
 	volumeStatsTimeout              = 10 * time.Second
+
+	// fsGroupMetadataKey is the mountInfo.json metadata key kata-runtime
+	// direct-volume uses for the group that owns the volume. The pod VM
+	// applies it after mounting the volume.
+	fsGroupMetadataKey = "fsGroup"
 )
 
 func getKataDirectVolumeRootPath() string {
@@ -199,6 +204,9 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	attrib["cloud-volume-id"] = volumeID
 	if attrib["cloud-volume-path"] == "" {
 		attrib["cloud-volume-path"] = devicePath
+	}
+	if gid := req.GetVolumeCapability().GetMount().GetVolumeMountGroup(); gid != "" {
+		attrib[fsGroupMetadataKey] = gid
 	}
 
 	info := mountInfoJSON{
@@ -430,6 +438,16 @@ func (ns *nodeServer) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapab
 				Type: &csi.NodeServiceCapability_Rpc{
 					Rpc: &csi.NodeServiceCapability_RPC{
 						Type: csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
+					},
+				},
+			},
+			{
+				// with this kubelet passes the pod's fsGroup to NodePublishVolume
+				// and skips its own chown, which would only reach the empty target
+				// path on the node and not the filesystem in the pod VM
+				Type: &csi.NodeServiceCapability_Rpc{
+					Rpc: &csi.NodeServiceCapability_RPC{
+						Type: csi.NodeServiceCapability_RPC_VOLUME_MOUNT_GROUP,
 					},
 				},
 			},

@@ -53,6 +53,64 @@ func TestParseKataVolumeStats(t *testing.T) {
 	}
 }
 
+func TestNodePublishVolume(t *testing.T) {
+	publish := func(t *testing.T, mount *csi.VolumeCapability_MountVolume) mountInfoJSON {
+		t.Helper()
+		rootDir := t.TempDir()
+		t.Setenv("KATA_DIRECT_VOLUME_ROOT_PATH", rootDir)
+		targetPath := filepath.Join(t.TempDir(), "pods", "uid", "volumes", "kubernetes.io~csi", "pvc", "mount")
+
+		ns := &nodeServer{devices: map[string]string{"vol-1": "vol-0123456789abcdef0"}}
+		_, err := ns.NodePublishVolume(t.Context(), &csi.NodePublishVolumeRequest{
+			VolumeId:   "vol-1",
+			TargetPath: targetPath,
+			VolumeCapability: &csi.VolumeCapability{
+				AccessType: &csi.VolumeCapability_Mount{Mount: mount},
+			},
+		})
+		if err != nil {
+			t.Fatalf("NodePublishVolume() error = %v", err)
+		}
+
+		data, err := os.ReadFile(filepath.Join(rootDir, b64.URLEncoding.EncodeToString([]byte(targetPath)), mountInfoFileName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var info mountInfoJSON
+		if err := json.Unmarshal(data, &info); err != nil {
+			t.Fatal(err)
+		}
+		return info
+	}
+
+	t.Run("records the pod fsGroup for the pod VM", func(t *testing.T) {
+		info := publish(t, &csi.VolumeCapability_MountVolume{FsType: "ext4", VolumeMountGroup: "2000"})
+		if got := info.Metadata["fsGroup"]; got != "2000" {
+			t.Fatalf("metadata fsGroup = %q, want %q", got, "2000")
+		}
+	})
+
+	t.Run("omits fsGroup when the pod sets none", func(t *testing.T) {
+		info := publish(t, &csi.VolumeCapability_MountVolume{FsType: "ext4"})
+		if got, ok := info.Metadata["fsGroup"]; ok {
+			t.Fatalf("metadata fsGroup = %q, want it unset", got)
+		}
+	})
+}
+
+func TestNodeGetCapabilities(t *testing.T) {
+	resp, err := (&nodeServer{}).NodeGetCapabilities(t.Context(), &csi.NodeGetCapabilitiesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range resp.GetCapabilities() {
+		if c.GetRpc().GetType() == csi.NodeServiceCapability_RPC_VOLUME_MOUNT_GROUP {
+			return
+		}
+	}
+	t.Fatal("VOLUME_MOUNT_GROUP not advertised, so kubelet will not pass the pod fsGroup")
+}
+
 // writeMountInfoDir creates a base64-encoded dir under rootDir with a
 // mountInfo.json inside it. Returns the dir path.
 func writeMountInfoDir(t *testing.T, rootDir, targetPath string, info *mountInfoJSON) string {
