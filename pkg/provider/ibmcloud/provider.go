@@ -5,24 +5,30 @@ package ibmcloud
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"math"
+	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
+	sdkConfig "github.com/IBM/ibmcloud-volume-interface/config"
 	"github.com/IBM/ibmcloud-volume-interface/lib/provider"
 	providerError "github.com/IBM/ibmcloud-volume-interface/lib/utils"
+	providerUtil "github.com/IBM/ibmcloud-volume-vpc/block/utils"
+	vpcconfig "github.com/IBM/ibmcloud-volume-vpc/block/vpcconfig"
 	cloudProvider "github.com/IBM/ibmcloud-volume-vpc/pkg/ibmcloudprovider"
 	k8sUtils "github.com/IBM/secret-utils-lib/pkg/k8s_utils"
 
 	caaProvider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
-
-const gib int64 = 1024 * 1024 * 1024
 
 var logger = log.New(log.Writer(), "[caa-csi/ibmcloud] ", log.LstdFlags|log.Lmsgprefix)
 
@@ -46,7 +52,7 @@ type Config struct {
 	Zone          string
 	ResourceGroup string
 	Profile       string   // e.g., "general-purpose", "5iops-tier", "10iops-tier", "custom", "sdp"
-	Iops          string   // Custom or SDP profile IOPS
+	Iops          string   // Custom/SDP profile IOPS; empty uses cloud defaults
 	Encrypted     string   // "true" or "false"
 	EncryptionKey string   // Key CRN
 	BillingType   string   // e.g., "hourly"
@@ -137,52 +143,6 @@ func parseConfig(params map[string]string) (Config, error) {
 	if cfg.Region == "" || cfg.Zone == "" {
 		return Config{}, fmt.Errorf("region and zone must be explicitly configured")
 	}
-	if cfg.Region == "" || cfg.Zone == "" {
-		return Config{}, fmt.Errorf("region and zone must be explicitly configured")
-	}
-	// The VPC API validates profile availability and zone placement.
-	// Like the upstream driver, ignore IOPS for tiered profiles.
-	if cfg.Profile != "custom" && cfg.Profile != "sdp" {
-		cfg.Iops = ""
-	}
-	if cfg.Iops != "" {
-		iops, err := strconv.ParseInt(cfg.Iops, 10, 64)
-		if err != nil || iops <= 0 {
-			return Config{}, fmt.Errorf("iops must be a positive integer")
-		}
-		cfg.Iops = strconv.FormatInt(iops, 10)
-	}
-	// Match the upstream StorageClass key and SDK bandwidth units (Mbps).
-	if value := params["throughput"]; value != "" {
-		bandwidth, err := strconv.ParseInt(value, 10, 32)
-		if err != nil || bandwidth <= 0 {
-			return Config{}, fmt.Errorf("throughput must be a positive int32 (Mbps)")
-		}
-		cfg.Throughput = int32(bandwidth)
-	}
-	if cfg.BillingType == "" {
-		cfg.BillingType = "hourly"
-	}
-	if cfg.FsType == "" {
-		cfg.FsType = "ext4"
-	}
-	if cfg.Encrypted == "" {
-		cfg.Encrypted = "false"
-	}
-	cfg.Encrypted = strings.ToLower(cfg.Encrypted)
-	if cfg.Encrypted != "true" && cfg.Encrypted != "false" {
-		return Config{}, fmt.Errorf("encrypted must be true or false")
-	}
-	if (cfg.Encrypted == "true") != (cfg.EncryptionKey != "") {
-		return Config{}, fmt.Errorf("encrypted=true requires encryptionKey; omit the key when encrypted=false")
-	}
-	for _, tag := range cfg.ExtraTags {
-		if strings.HasPrefix(tag, ownershipTagPrefix) || strings.HasPrefix(tag, configTagPrefix) {
-			return Config{}, fmt.Errorf("tag prefix %q is reserved for driver ownership", ownershipTagPrefix)
-		}
-	}
-	return cfg, nil
-}
 
 	validProfiles := map[string]bool{
 		"general-purpose": true,
@@ -246,6 +206,42 @@ func parseConfig(params map[string]string) (Config, error) {
 	return cfg, nil
 }
 
+const (
+	// vpcBlockProviderName is the key the SDK registers its VPC backend under.
+	vpcBlockProviderName = "vpc-block"
+	// defaultVPCAPIVersion is sent with every VPC API call. Empty lets the SDK use its own default.
+	defaultVPCAPIVersion = ""
+
+	// Optional overrides for the values below.
+	vpcEndpointEnv   = "IBMCLOUD_VPC_ENDPOINT_URL"
+	vpcAPIVersionEnv = "IBMCLOUD_VPC_API_VERSION"
+	resourceGroupEnv = "IBMCLOUD_RESOURCE_GROUP_ID"
+)
+
+// buildSDKConfig returns the settings the IBM volume SDK needs to call the VPC APIs
+func buildSDKConfig(cfg Config) *sdkConfig.Config {
+	endpoint := os.Getenv(vpcEndpointEnv)
+	if endpoint == "" {
+		endpoint = fmt.Sprintf("https://%s.iaas.cloud.ibm.com", cfg.Region)
+	}
+	apiVersion := os.Getenv(vpcAPIVersionEnv)
+	if apiVersion == "" {
+		apiVersion = defaultVPCAPIVersion
+	}
+	return &sdkConfig.Config{
+		Server: &sdkConfig.ServerConfig{},
+		VPC: &sdkConfig.VPCProviderConfig{
+			Enabled:              true,
+			VPCBlockProviderName: vpcBlockProviderName,
+			G2EndpointURL:        endpoint,
+			G2TokenExchangeURL:   "https://iam.cloud.ibm.com",
+			G2ResourceGroupID:    cfg.ResourceGroup,
+			G2APIVersion:         apiVersion,
+			APIVersion:           apiVersion,
+		},
+	}
+}
+
 func newProviderWithConfig(cfg Config) (*IBMCloudProvider, error) {
 	// Instantiate a production Zap logger for the SDK
 	zapLogger, err := zap.NewProduction()
@@ -254,23 +250,30 @@ func newProviderWithConfig(cfg Config) (*IBMCloudProvider, error) {
 		zapLogger = zap.NewExample()
 	}
 
-	// Instantiate Kubernetes client from service account
+	// Use the resource group from the StorageClass. If it is not set there,
+	// fall back to the IBMCLOUD_RESOURCE_GROUP_ID environment variable.
+	cfg.ResourceGroup, err = resolveResourceGroup(cfg.ResourceGroup, os.Getenv(resourceGroupEnv))
+	if err != nil {
+		return nil, err
+	}
+
 	k8sClient, err := k8sUtils.Getk8sClientSet()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Kubernetes clientset: %w", err)
 	}
 
-	// Initialize the official community IBM Cloud Storage Provider
-	storageProvider, err := cloudProvider.NewIBMCloudStorageProvider("", &k8sClient, zapLogger)
+	conf := buildSDKConfig(cfg)
+	registry, err := providerUtil.InitProviders(&vpcconfig.VPCBlockConfig{
+		VPCConfig:    conf.VPC,
+		ServerConfig: conf.Server,
+	}, &k8sClient, zapLogger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create NewIBMCloudStorageProvider: %w", err)
+		return nil, fmt.Errorf("failed to initialize IBM VPC provider: %w", err)
 	}
-	// The SDK requires a resource group in its request. Upstream defaults it
-	// from this same provider configuration when the StorageClass omits it.
-	var errRG error
-	cfg.ResourceGroup, errRG = resolveResourceGroup(cfg.ResourceGroup, storageProvider.GetConfig().VPC.G2ResourceGroupID)
-	if errRG != nil {
-		return nil, errRG
+	storageProvider := &cloudProvider.IBMCloudStorageProvider{
+		ProviderName:   vpcBlockProviderName,
+		ProviderConfig: conf,
+		Registry:       registry,
 	}
 
 	// Retrieve the active VPC Storage Provider Session
@@ -279,64 +282,22 @@ func newProviderWithConfig(cfg Config) (*IBMCloudProvider, error) {
 		return nil, fmt.Errorf("failed to get Provider Session: %w", err)
 	}
 
-	return &IBMCloudProvider{session: session, config: cfg}, nil
+	return &IBMCloudProvider{
+		session: session,
+		config:  cfg,
+	}, nil
 }
 
-func parseConfig(params map[string]string) (Config, error) {
-	profile := firstParameter(params, "profile", "ibmProfile")
-	if profile == "" {
-		profile = "general-purpose"
-	}
-
-	var extraTags []string
-	for _, tag := range strings.Split(params["tags"], ",") {
-		if tag = strings.TrimSpace(tag); tag != "" {
-			extraTags = append(extraTags, tag)
-		}
-	}
-
-	volumeID := params["ibm-volume-id"]
-	if volumeID == "" {
-		volumeID = params["cloud-volume-path"]
-	}
-
-	cfg := Config{
-		Region:        firstParameter(params, "region", "ibmRegion"),
-		Zone:          firstParameter(params, "zone", "ibmZone"),
-		ResourceGroup: firstParameter(params, "resourceGroup", "ibmResourceGroup"),
-		Profile:       profile,
-		Iops:          firstParameter(params, "iops", "ibmIops"),
-		Encrypted:     params["encrypted"],
-		EncryptionKey: params["encryptionKey"],
-		BillingType:   params["billingType"],
-		ExtraTags:     extraTags,
-		FsType:        params["csi.storage.k8s.io/fstype"],
-		VolumeID:      volumeID,
-	}
-
-	if throughput := params["throughput"]; throughput != "" {
-		value, err := strconv.ParseInt(throughput, 10, 32)
-		if err != nil || value <= 0 {
-			return Config{}, fmt.Errorf("throughput must be a positive integer in Mbps")
-		}
-		cfg.Throughput = int32(value)
-	}
-
-	return cfg, nil
-}
-
-func firstParameter(params map[string]string, primary, fallback string) string {
-	if value := params[primary]; value != "" {
-		return value
-	}
-	return params[fallback]
-}
-
-func resolveResourceGroup(explicit, configured string) string {
+// resolveResourceGroup returns the explicit StorageClass resource group if set,
+// or falls back to the one configured in the driver's environment.
+func resolveResourceGroup(explicit, configured string) (string, error) {
 	if explicit != "" {
-		return explicit
+		return explicit, nil
 	}
-	return configured
+	if configured == "" {
+		return "", fmt.Errorf("%w: resourceGroup is omitted and IBMCLOUD_RESOURCE_GROUP_ID is not set; configure either value", caaProvider.ErrInvalidParameters)
+	}
+	return configured, nil
 }
 
 // CreateVolume provisions a new VPC Block Volume using the ibmcloud-volume-vpc SDK.
@@ -361,50 +322,94 @@ func (p *IBMCloudProvider) createVolume(ctx context.Context, volumeID string, si
 	if info, err := p.existingVolumeInfo(ctx, volumeID, allocated); err != nil || info != nil {
 		return info, err
 	}
-	if existing != nil {
-		logger.Printf("Volume %s already exists, reusing", volumeID)
-		return volumeInfo(volumeID, existing), nil
+	var sourceSnapshotID string
+	if snapshotRef != "" {
+		sourceSnapshotID, err = p.restorableSnapshotID(ctx, snapshotRef, allocated)
+		if err != nil {
+			return nil, err
+		}
 	}
+	sizeGB := int(allocated / gib)
 
 	logger.Printf("Creating IBM VPC Volume %s (%d GB, profile=%s, zone=%s)",
 		volumeID, sizeGB, p.config.Profile, p.config.Zone)
 
-	request := provider.Volume{
-		Name:        &volumeID,
-		Capacity:    &sizeGB,
-		Az:          p.config.Zone,
-		Region:      p.config.Region,
-		BillingType: p.config.BillingType,
+	// Combine volume tagging
+	tags := []string{ownershipTagPrefix + volumeID, p.configTag()}
+	tags = append(tags, p.config.ExtraTags...)
+
+	// Create volume request payload using community structures
+	volRequest := provider.Volume{
+		Name:     &volumeID,
+		Capacity: &sizeGB,
+		Az:       p.config.Zone,
+		Region:   p.config.Region,
 		VPCVolume: provider.VPCVolume{
 			Bandwidth: p.config.Throughput,
-			Profile:   &provider.Profile{Name: p.config.Profile},
-			Tags:      append([]string{"caa-csi-volume-id:" + volumeID}, p.config.ExtraTags...),
+			Profile: &provider.Profile{
+				Name: p.config.Profile,
+			},
+			Tags: tags,
 		},
 	}
 
+	// Setup custom FS type if specified
 	if p.config.FsType != "" {
-		request.VolumeType = provider.VolumeType(p.config.FsType)
-	}
-	if p.config.ResourceGroup != "" {
-		request.ResourceGroup = &provider.ResourceGroup{ID: p.config.ResourceGroup}
-	}
-	if p.config.Iops != "" && (p.config.Profile == "custom" || p.config.Profile == "sdp") {
-		request.Iops = &p.config.Iops
-	}
-	if strings.EqualFold(p.config.Encrypted, "true") && p.config.EncryptionKey != "" {
-		request.VolumeEncryptionKey = &provider.VolumeEncryptionKey{CRN: p.config.EncryptionKey}
+		volRequest.VolumeType = provider.VolumeType(p.config.FsType)
 	}
 
-	created, err := p.session.CreateVolume(request)
+	// Setup Custom Resource Group if specified
+	if p.config.ResourceGroup != "" {
+		volRequest.VPCVolume.ResourceGroup = &provider.ResourceGroup{
+			ID: p.config.ResourceGroup,
+		}
+	}
+
+	if sourceSnapshotID != "" {
+		volRequest.SnapshotID = sourceSnapshotID
+	}
+
+	// The parser retains IOPS only for custom and SDP profiles.
+	if p.config.Iops != "" {
+		volRequest.Iops = &p.config.Iops
+	}
+
+	// Setup customer managed encryption key if specified
+	if strings.ToLower(p.config.Encrypted) == "true" && p.config.EncryptionKey != "" {
+		volRequest.VPCVolume.VolumeEncryptionKey = &provider.VolumeEncryptionKey{
+			CRN: p.config.EncryptionKey,
+		}
+	}
+
+	volResponse, err := p.session.CreateVolume(volRequest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to CreateVolume via ibmcloud-volume-vpc SDK: %w", err)
 	}
-	if created == nil || created.VolumeID == "" {
-		return nil, fmt.Errorf("ibmcloud-volume-vpc SDK returned an empty volume")
+	// This SDK waits for availability but returns the original (possibly
+	// pending) create object. Refresh by native ID before reporting success.
+	if volResponse != nil && volResponse.VolumeID != "" && volResponse.Status != "available" {
+		volResponse, err = p.session.GetVolume(volResponse.VolumeID)
+		if err != nil {
+			return nil, fmt.Errorf("refreshing created IBM volume: %w", err)
+		}
+	}
+	// SDK v1.1.23's conversion omits Name even on a successful response.
+	if volResponse != nil && volResponse.Name == nil {
+		volResponse.Name = &volumeID
 	}
 
-	logger.Printf("Created IBM VPC Volume %s (vpc-id=%s)", volumeID, created.VolumeID)
-	return volumeInfo(volumeID, created), nil
+	info, err := volumeInfo(volResponse)
+	if err != nil {
+		return nil, err
+	}
+	if info.VolumeID != volumeID || info.SizeBytes < allocated {
+		return nil, fmt.Errorf("IBM create response does not match the requested name/capacity")
+	}
+	if sourceSnapshotID != "" {
+		info.Metadata["source-snapshot"] = sourceSnapshotID
+	}
+	logger.Printf("Created IBM VPC Volume %s (vpc-id=%s)", volumeID, info.Path)
+	return info, nil
 }
 
 // existingVolumeInfo returns the already-provisioned volume for volumeID, or
@@ -436,20 +441,30 @@ func (p *IBMCloudProvider) DeleteVolume(ctx context.Context, volumeID string) er
 	if errors.Is(err, caaProvider.ErrVolumeNotFound) {
 		return nil
 	}
-	if volume.VolumeID == "" {
-		return fmt.Errorf("IBM VPC volume %s has no native ID", volumeID)
+	if err != nil {
+		return err
 	}
 
-	logger.Printf("Deleting IBM VPC Volume %s (vpc-id=%s)", volumeID, volume.VolumeID)
-	if err := p.session.DeleteVolume(&provider.Volume{VolumeID: volume.VolumeID}); err != nil {
-		if isNotFound(err) {
-			logger.Printf("Volume %s was already deleted", volume.VolumeID)
-			return nil
-		}
+	// Cleanup needs verified ownership and identity, not a runnable volume.
+	// In particular, a failed create must not prevent an API deletion attempt.
+	if err := p.checkOwnedVolume(vol, volumeID); err != nil {
+		return err
+	}
+	if vol.VolumeID == "" {
+		return fmt.Errorf("IBM volume has no native ID")
+	}
+	logger.Printf("Deleting IBM VPC Volume %s (vpc-id=%s)", volumeID, vol.VolumeID)
+
+	volRequest := &provider.Volume{
+		VolumeID: vol.VolumeID,
+	}
+
+	err = p.session.DeleteVolume(volRequest)
+	if err != nil {
 		return fmt.Errorf("failed to DeleteVolume via ibmcloud-volume-vpc SDK: %w", err)
 	}
 
-	logger.Printf("Deleted IBM VPC Volume %s", volume.VolumeID)
+	logger.Printf("Deleted IBM VPC Volume %s", vol.VolumeID)
 	return nil
 }
 
@@ -459,10 +474,10 @@ func (p *IBMCloudProvider) GetVolumeInfo(ctx context.Context, volumeID string) (
 	if err != nil {
 		return nil, err
 	}
-	if volume == nil {
-		return nil, fmt.Errorf("volume %s not found", volumeID)
+	if err := p.checkOwnedVolume(vol, volumeID); err != nil {
+		return nil, err
 	}
-	return volumeInfo(volumeID, volume), nil
+	return volumeInfo(vol)
 }
 
 const (
@@ -482,48 +497,25 @@ func (p *IBMCloudProvider) configTag() string {
 	return fmt.Sprintf("%s%x", configTagPrefix, sha256.Sum256(data))
 }
 
-func (p *IBMCloudProvider) getVolumeByName(name string) (*provider.Volume, error) {
-	if p.config.VolumeID != "" {
-		volume, err := p.session.GetVolume(p.config.VolumeID)
-		if err == nil {
-			return volume, nil
-		}
-		if isNotFound(err) {
-			return nil, nil
-		}
-		logger.Printf("Warning: failed to GetVolume %s, falling back to name lookup: %v", p.config.VolumeID, err)
+func (p *IBMCloudProvider) NormalizeCapacity(sizeBytes int64) (int64, error) {
+	if sizeBytes < 0 {
+		return 0, fmt.Errorf("%w: negative capacity", caaProvider.ErrInvalidParameters)
 	}
-
-	volume, err := p.session.GetVolumeByName(name)
-	if err == nil {
-		return volume, nil
-	}
-	if isNotFound(err) {
-		return nil, nil
-	}
-	return nil, fmt.Errorf("failed to GetVolumeByName: %w", err)
-}
-
-func isNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	if providerError.GetErrorType(err) == providerError.EntityNotFound {
-		return true
-	}
-	var message providerError.Message
-	return errors.As(err, &message) && message.RC == 404
-}
-
-func capacityGiB(sizeBytes int64) (int, error) {
-	if sizeBytes <= 0 {
-		return 0, fmt.Errorf("volume capacity must be greater than zero")
-	}
-	sizeGB := sizeBytes / gib
+	units := sizeBytes / gib
 	if sizeBytes%gib != 0 {
-		sizeGB++
+		units++
 	}
-	return int(sizeGB), nil
+	minimum := int64(10)
+	if p.config.Profile == "sdp" {
+		minimum = 1
+	}
+	if units < minimum {
+		units = minimum
+	}
+	if units > math.MaxInt64/gib {
+		return 0, fmt.Errorf("%w: capacity overflows int64", caaProvider.ErrInvalidParameters)
+	}
+	return units * gib, nil
 }
 
 // List-by-name returns an empty collection for absence, unlike GetVolumeByName
@@ -660,16 +652,16 @@ func volumeInfo(vol *provider.Volume) (*caaProvider.VolumeInfo, error) {
 	}
 
 	return &caaProvider.VolumeInfo{
-		VolumeID:  volumeID,
-		Path:      volume.VolumeID,
-		SizeBytes: capacityBytes,
+		VolumeID:  *vol.Name,
+		Path:      vol.VolumeID,
+		SizeBytes: int64(*vol.Capacity) * gib,
 		Provider:  "ibmcloud",
 		Metadata: map[string]string{
-			"cloud-volume-path": volume.VolumeID,
+			"cloud-volume-path": vol.VolumeID,
 			"cloud-provider":    "ibmcloud",
-			"ibm-volume-id":     volume.VolumeID,
-			"zone":              volume.Az,
-			"profile":           profile,
+			"ibm-volume-id":     vol.VolumeID,
+			"zone":              vol.Az,
+			"profile":           vol.Profile.Name,
 		},
 	}, nil
 }
@@ -680,6 +672,7 @@ func (p *IBMCloudProvider) VolumeExists(ctx context.Context, volumeID string) (b
 	if errors.Is(err, caaProvider.ErrVolumeNotFound) {
 		return false, nil
 	}
+	return err == nil, err
 }
 
 // ExpandVolume implements VolumeExpander to support online expansion.
@@ -689,15 +682,23 @@ func (p *IBMCloudProvider) ExpandVolume(ctx context.Context, volumeID string, ne
 		return fmt.Errorf("cannot expand volume %s: %w", volumeID, err)
 	}
 
-	newSizeGB := int((newSizeBytes + (1024*1024*1024 - 1)) / (1024 * 1024 * 1024))
-	logger.Printf("Expanding IBM VPC volume %s (vpc-id=%s) to %d GB", volumeID, volInfo.Path, newSizeGB)
-
-	volRequest := provider.Volume{
-		VolumeID: volInfo.Path,
-		Capacity: &newSizeGB,
+	allocated, err := p.NormalizeCapacity(newSizeBytes)
+	if err != nil {
+		return err
 	}
 
-	err = p.session.UpdateVolume(volRequest)
+	// The disk may already be bigger than the PVC (IBM has a minimum size), so skip if no growth is needed.
+	if volInfo.SizeBytes >= allocated {
+		logger.Printf("IBM VPC volume %s (vpc-id=%s) is already %d GB, nothing to expand", volumeID, volInfo.Path, volInfo.SizeBytes/gib)
+		return nil
+	}
+	logger.Printf("Expanding IBM VPC volume %s (vpc-id=%s) to %d GB", volumeID, volInfo.Path, allocated/gib)
+
+	// Capacity is in bytes: the SDK converts it to GB before calling the API.
+	_, err = p.session.ExpandVolume(provider.ExpandVolumeRequest{
+		VolumeID: volInfo.Path,
+		Capacity: allocated,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to expand volume via ibmcloud-volume-vpc SDK: %w", err)
 	}
@@ -718,49 +719,37 @@ func (p *IBMCloudProvider) ListManagedVolumes(ctx context.Context) ([]*caaProvid
 		return nil, fmt.Errorf("failed to ListVolumes: %w", err)
 	}
 
-	if vList == nil {
-		return vols, nil
-	}
-
-	for _, vol := range vList.Volumes {
-		if vol == nil || vol.Name == nil {
+	for _, vol := range cloudVolumes {
+		if vol == nil {
 			continue
 		}
+		if vol.Name == nil {
+			name := ""
+			ambiguous := false
+			for _, tag := range vol.Tags {
+				if strings.HasPrefix(tag, ownershipTagPrefix) {
+					if name != "" {
+						ambiguous = true
+					}
+					name = strings.TrimPrefix(tag, ownershipTagPrefix)
+				}
+			}
+			if name == "" || ambiguous {
+				continue
+			}
+			vol.Name = &name
+		}
 
-		name := *vol.Name
-		// Only recover volumes created with caa-csi block prefix
-		if !strings.HasPrefix(name, "csi-vol-") && !strings.Contains(name, "-") {
+		// A name containing '-' is NOT evidence of ownership. Never adopt an
+		// unrelated IBM disk, even if it shares our PVC naming convention.
+		if err := p.checkOwnedVolume(vol, *vol.Name); err != nil {
 			continue
 		}
-
-		csiVolumeID := name
-		if strings.HasPrefix(name, "csi-vol-") {
-			csiVolumeID = strings.TrimPrefix(name, "csi-vol-")
-		}
-
-		var capacityBytes int64
-		if vol.Capacity != nil {
-			capacityBytes = int64(*vol.Capacity) * 1024 * 1024 * 1024
-		}
-
-		profileName := ""
-		if vol.VPCVolume.Profile != nil {
-			profileName = vol.VPCVolume.Profile.Name
-		}
-
-		vols = append(vols, &caaProvider.VolumeInfo{
-			VolumeID:  csiVolumeID,
-			Path:      vol.VolumeID,
-			SizeBytes: capacityBytes,
-			Provider:  "ibmcloud",
-			Metadata: map[string]string{
-				"cloud-volume-path": vol.VolumeID,
-				"cloud-provider":    "ibmcloud",
-				"ibm-volume-id":     vol.VolumeID,
-				"zone":              vol.Az,
-				"profile":           profileName,
-			},
-		})
+		info, err := volumeInfo(vol)
+		if err != nil {
+			continue
+		} // Pending/failed disks are not usable records.
+		vols = append(vols, info)
 	}
 
 	return vols, nil

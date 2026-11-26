@@ -11,9 +11,9 @@ parameters:
   billingType: "hourly"                     # The default billing policy used
   encrypted: "false"                        # Set to "true" for Key Protect volume encryption
   encryptionKey: ""                         # CRN of Key Protect key if encrypted is "true"
-  resourceGroup: ""                         # Optional Resource Group ID
+  resourceGroup: ""                         # Resource Group ID (required)
   region: "us-south"                        # Target Region
-  zone: "us-south-1"                        # Target Zone
+  zone: "us-south-1"                        # Target Zone; must be the zone CAA creates PodVMs in
   tags: "confidential-containers,caa-csi"   # Extra tags separated by commas
 reclaimPolicy: "Delete"
 volumeBindingMode: Immediate

@@ -2,17 +2,17 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: caa-csi-block-plugin
-  namespace: kube-system
+  namespace: caa-csi-block
   labels:
-    app: kube-system
+    app: caa-csi-block
 spec:
   selector:
     matchLabels:
-      app: kube-system
+      app: caa-csi-block
   template:
     metadata:
       labels:
-        app: kube-system
+        app: caa-csi-block
     spec:
       serviceAccountName: caa-csi-provisioner
       containers:
@@ -50,7 +50,7 @@ spec:
           args:
             - "--v=3"
             - "--csi-address=/csi/csi.sock"
-            - "--kubelet-registration-path=/var/lib/kubelet/plugins/caa-csi-block/csi.sock"
+            - "--kubelet-registration-path=/var/data/kubelet/plugins/caa-csi-block/csi.sock"
           env:
             - name: KUBE_NODE_NAME
               valueFrom:
@@ -69,27 +69,17 @@ spec:
           args:
             - "--drivername=caa-csi-block.csi.confidentialcontainers.io"
             - "--endpoint=unix:///csi/csi.sock"
-            - "--sidecarEndpoint=/provider/provider.sock"
             - "--nodeid=$(KUBE_NODE_NAME)"
           env:
             - name: KUBE_NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            - name: IKS_ENABLED
-              value: "True"
-            - name: IKS_BLOCK_PROVIDER_NAME
-              value: "iks-vpc-classic"
-            - name: VPC_ENABLED
-              value: "True"
-            - name: VPC_BLOCK_PROVIDER_NAME
-              value: "vpc-classic"
-            # Path to storage-secret-store mount (required by secret-utils-lib / ibmcloud-volume-vpc SDK)
-            - name: SECRET_CONFIG_PATH
-              value: "/etc/storage_ibmc"
-            # Empty-store recovery / delete fallback configuration
+            # Empty-store recovery / delete fallback (see deploy/bootstrap-params-ibmcloud.yaml).
             - name: CSI_CLOUD_PROVIDER
               value: "ibmcloud"
+            - name: CSI_BOOTSTRAP_PARAMS_FILE
+              value: /etc/caa-csi-block/bootstrap-params.json
             # Fallback to local host-side stats when kata-runtime is not present in container $PATH
             - name: CSI_ALLOW_HOST_STATS_FALLBACK
               value: "true"
@@ -98,50 +88,24 @@ spec:
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
-            - mountPath: /provider
-              name: provider-socket-dir
+            # Service account token used for IBM Cloud trusted profile authentication.
+            - mountPath: /var/run/secrets/tokens
+              name: vault-token
+              readOnly: true
             - mountPath: /var/data/kubelet/pods
               name: mountpoint-dir
               mountPropagation: Bidirectional
-            - mountPath: /var/lib/kubelet/plugins
+            - mountPath: /var/data/kubelet/plugins
               name: plugins-dir
               mountPropagation: Bidirectional
             - mountPath: /run/kata-containers/shared/direct-volumes
               name: shared-directvols
             - mountPath: /var/lib/caa-csi-block
               name: csi-data
-            - mountPath: /etc/storage_ibmc
-              name: customer-auth
-              readOnly: true
-        # Provides short-lived IBM credentials to the driver over provider.sock.
-        - name: storage-secret-sidecar
-          image: icr.io/obs/armada-storage-secret:v1.3.65
-          args:
-            - "--endpoint=unix:/sidecardir/provider.sock"
-          env:
-            - name: TOKEN_EXPIRY_DIFF
-              value: "20m"
-            - name: PROFILE_CAPACITY
-              value: "1"
-          securityContext:
-            privileged: false
-            allowPrivilegeEscalation: false
-          resources:
-            requests:
-              cpu: 10m
-              memory: 20Mi
-            limits:
-              cpu: 40m
-              memory: 80Mi
-          volumeMounts:
-            - mountPath: /sidecardir
-              name: provider-socket-dir
-            - mountPath: /var/run/secrets/tokens
-              name: vault-token
+            - mountPath: /etc/caa-csi-block
+              name: bootstrap-params
               readOnly: true
       volumes:
-        - name: provider-socket-dir
-          emptyDir: {}
         - name: vault-token
           projected:
             sources:
@@ -150,7 +114,7 @@ spec:
                   expirationSeconds: 600
         - name: socket-dir
           hostPath:
-            path: /var/lib/kubelet/plugins/caa-csi-block
+            path: /var/data/kubelet/plugins/caa-csi-block
             type: DirectoryOrCreate
         - name: mountpoint-dir
           hostPath:
@@ -158,11 +122,11 @@ spec:
             type: DirectoryOrCreate
         - name: registration-dir
           hostPath:
-            path: /var/lib/kubelet/plugins_registry
+            path: /var/data/kubelet/plugins_registry
             type: Directory
         - name: plugins-dir
           hostPath:
-            path: /var/lib/kubelet/plugins
+            path: /var/data/kubelet/plugins
             type: Directory
         - name: shared-directvols
           hostPath:
@@ -172,6 +136,7 @@ spec:
           hostPath:
             path: /var/lib/caa-csi-block
             type: DirectoryOrCreate
-        - name: customer-auth
-          secret:
-            secretName: storage-secret-store
+        - name: bootstrap-params
+          configMap:
+            name: caa-csi-bootstrap-params
+            optional: true
