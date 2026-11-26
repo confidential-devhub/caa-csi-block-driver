@@ -72,11 +72,11 @@ type IBMCloudProvider struct {
 func NewIBMCloudProvider(params map[string]string) (*IBMCloudProvider, error) {
 	cfg, err := parseConfig(params)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", caaProvider.ErrInvalidParameters, err)
+		return nil, fmt.Errorf("%w: %w", caaProvider.ErrInvalidParameters, err)
 	}
 	p, err := newProviderWithConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", caaProvider.ErrInvalidParameters, err)
+		return nil, fmt.Errorf("%w: %w", caaProvider.ErrInvalidParameters, err)
 	}
 	return p, nil
 }
@@ -360,7 +360,7 @@ func (p *IBMCloudProvider) createVolume(ctx context.Context, volumeID string, si
 
 	// Setup Custom Resource Group if specified
 	if p.config.ResourceGroup != "" {
-		volRequest.VPCVolume.ResourceGroup = &provider.ResourceGroup{
+		volRequest.ResourceGroup = &provider.ResourceGroup{
 			ID: p.config.ResourceGroup,
 		}
 	}
@@ -376,7 +376,7 @@ func (p *IBMCloudProvider) createVolume(ctx context.Context, volumeID string, si
 
 	// Setup customer managed encryption key if specified
 	if strings.ToLower(p.config.Encrypted) == "true" && p.config.EncryptionKey != "" {
-		volRequest.VPCVolume.VolumeEncryptionKey = &provider.VolumeEncryptionKey{
+		volRequest.VolumeEncryptionKey = &provider.VolumeEncryptionKey{
 			CRN: p.config.EncryptionKey,
 		}
 	}
