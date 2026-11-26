@@ -44,6 +44,20 @@ spec:
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
+        # Sidecar: csi-snapshotter (handles CreateSnapshot/DeleteSnapshot RPCs).
+        - name: csi-snapshotter
+          image: registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
+          args:
+            - "--v=3"
+            - "--csi-address=/csi/csi.sock"
+            - "--timeout=600s"
+            - "--leader-election=true"
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
         # Sidecar: node-driver-registrar (registers CSI driver with kubelet)
         - name: node-driver-registrar
           image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.9.0
