@@ -50,7 +50,7 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 {{- if eq .Values.provider "ibmcloud" }}
 ---
-# the IBM libraries read storage-secret-store and cluster-info from the pod's own namespace
+# the IBM libraries read the user-created ibm-cloud-credentials Secret from the pod's own namespace
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -61,11 +61,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: ["storage-secret-store"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    resourceNames: ["cluster-info"]
+    resourceNames: ["ibm-cloud-credentials"]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

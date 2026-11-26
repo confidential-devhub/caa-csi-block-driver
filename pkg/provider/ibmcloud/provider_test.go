@@ -25,6 +25,7 @@ type fakeSession struct {
 	createResult       func(provider.Volume) *provider.Volume
 	pages              map[string]*provider.VolumeList
 	creates, deletes   int
+	expands            int
 	lastFilters        map[string]string
 }
 
@@ -147,13 +148,22 @@ func (s *fakeSession) GetVolume(id string) (*provider.Volume, error) {
 	return nil, errors.New("not found")
 }
 
+// Like the real SDK, UpdateVolume only touches tags and never resizes.
 func (s *fakeSession) UpdateVolume(v provider.Volume) error {
-	existing, err := s.GetVolume(v.VolumeID)
+	_, err := s.GetVolume(v.VolumeID)
+	return err
+}
+
+// Like the real SDK, ExpandVolume takes the new size in bytes.
+func (s *fakeSession) ExpandVolume(req provider.ExpandVolumeRequest) (int64, error) {
+	existing, err := s.GetVolume(req.VolumeID)
 	if err != nil {
-		return err
+		return -1, err
 	}
-	existing.Capacity = v.Capacity
-	return nil
+	s.expands++
+	sizeGB := int((req.Capacity + gib - 1) / gib)
+	existing.Capacity = &sizeGB
+	return req.Capacity, nil
 }
 
 func TestCustomCreateRequestAndExistingExpansion(t *testing.T) {
@@ -184,8 +194,24 @@ func TestCustomCreateRequestAndExistingExpansion(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, err := p.GetVolumeInfo(context.TODO(), "pvc-test")
-	if err != nil || info.SizeBytes != 40*gib {
-		t.Fatalf("expanded result: %+v %v", info, err)
+	if err != nil || info.SizeBytes != 40*gib || s.expands != 1 {
+		t.Fatalf("expanded result: %+v %v (expands=%d)", info, err, s.expands)
+	}
+	// A request at or below the current size must not reach the cloud.
+	for _, size := range []int64{40 * gib, 5 * gib} {
+		if err := p.ExpandVolume(context.TODO(), "pvc-test", size); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if info, err := p.GetVolumeInfo(context.TODO(), "pvc-test"); err != nil || info.SizeBytes != 40*gib || s.expands != 1 {
+		t.Fatalf("no-op expand changed the volume: %+v %v (expands=%d)", info, err, s.expands)
+	}
+	// Sizes are rounded up to a whole GiB.
+	if err := p.ExpandVolume(context.TODO(), "pvc-test", 40*gib+1); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := p.GetVolumeInfo(context.TODO(), "pvc-test"); err != nil || info.SizeBytes != 41*gib || s.expands != 2 {
+		t.Fatalf("rounded expand: %+v %v (expands=%d)", info, err, s.expands)
 	}
 	p.config.Iops = "6000"
 	if _, err := p.CreateVolume(context.TODO(), "pvc-test", 20*gib); !errors.Is(err, caa.ErrVolumeAlreadyExists) {
@@ -472,5 +498,27 @@ func TestRecoveryOwnershipAndPagination(t *testing.T) {
 	s.pages = map[string]*provider.VolumeList{"": nil}
 	if _, err := p.CreateVolume(context.TODO(), "pvc-new", 20*gib); err == nil {
 		t.Fatal("nil list treated as absence")
+	}
+}
+
+func TestBuildSDKConfig(t *testing.T) {
+	t.Setenv(vpcEndpointEnv, "")
+	t.Setenv(vpcAPIVersionEnv, "")
+	conf := buildSDKConfig(Config{Region: "eu-de", ResourceGroup: "rg-1"})
+	if conf.Server == nil || conf.VPC == nil || conf.IKS != nil {
+		t.Fatalf("unexpected sections: %+v", conf)
+	}
+	if !conf.VPC.Enabled || conf.VPC.VPCBlockProviderName != vpcBlockProviderName ||
+		conf.VPC.G2EndpointURL != "https://eu-de.iaas.cloud.ibm.com" ||
+		conf.VPC.G2ResourceGroupID != "rg-1" || conf.VPC.G2APIVersion != defaultVPCAPIVersion ||
+		conf.VPC.G2APIKey != "" {
+		t.Fatalf("unexpected VPC config: %+v", conf.VPC)
+	}
+
+	t.Setenv(vpcEndpointEnv, "https://eu-de.private.iaas.cloud.ibm.com")
+	t.Setenv(vpcAPIVersionEnv, "2025-01-01")
+	conf = buildSDKConfig(Config{Region: "eu-de", ResourceGroup: "rg-1"})
+	if conf.VPC.G2EndpointURL != "https://eu-de.private.iaas.cloud.ibm.com" || conf.VPC.G2APIVersion != "2025-01-01" {
+		t.Fatalf("overrides ignored: %+v", conf.VPC)
 	}
 }

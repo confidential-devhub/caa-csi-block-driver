@@ -36,9 +36,7 @@ parameters:
   {{- with .Values.ibmcloud.encryptionKey }}
   encryptionKey: {{ . | quote }}
   {{- end }}
-  {{- with .Values.ibmcloud.resourceGroup }}
-  resourceGroup: {{ . | quote }}
-  {{- end }}
+  resourceGroup: {{ required "ibmcloud.resourceGroup is required when provider=ibmcloud" .Values.ibmcloud.resourceGroup | quote }}
   {{- with .Values.ibmcloud.iops }}
   iops: {{ . | toString | quote }}
   {{- end }}

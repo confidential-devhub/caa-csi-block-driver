@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,8 +19,11 @@ import (
 
 	"go.uber.org/zap"
 
+	sdkConfig "github.com/IBM/ibmcloud-volume-interface/config"
 	"github.com/IBM/ibmcloud-volume-interface/lib/provider"
 	providerError "github.com/IBM/ibmcloud-volume-interface/lib/utils"
+	providerUtil "github.com/IBM/ibmcloud-volume-vpc/block/utils"
+	vpcconfig "github.com/IBM/ibmcloud-volume-vpc/block/vpcconfig"
 	cloudProvider "github.com/IBM/ibmcloud-volume-vpc/pkg/ibmcloudprovider"
 	k8sUtils "github.com/IBM/secret-utils-lib/pkg/k8s_utils"
 
@@ -202,6 +206,42 @@ func parseConfig(params map[string]string) (Config, error) {
 	return cfg, nil
 }
 
+const (
+	// vpcBlockProviderName is the key the SDK registers its VPC backend under.
+	vpcBlockProviderName = "vpc-block"
+	// defaultVPCAPIVersion is sent with every VPC API call. Empty lets the SDK use its own default.
+	defaultVPCAPIVersion = ""
+
+	// Optional overrides for the values below.
+	vpcEndpointEnv   = "IBMCLOUD_VPC_ENDPOINT_URL"
+	vpcAPIVersionEnv = "IBMCLOUD_VPC_API_VERSION"
+	resourceGroupEnv = "IBMCLOUD_RESOURCE_GROUP_ID"
+)
+
+// buildSDKConfig returns the settings the IBM volume SDK needs to call the VPC APIs
+func buildSDKConfig(cfg Config) *sdkConfig.Config {
+	endpoint := os.Getenv(vpcEndpointEnv)
+	if endpoint == "" {
+		endpoint = fmt.Sprintf("https://%s.iaas.cloud.ibm.com", cfg.Region)
+	}
+	apiVersion := os.Getenv(vpcAPIVersionEnv)
+	if apiVersion == "" {
+		apiVersion = defaultVPCAPIVersion
+	}
+	return &sdkConfig.Config{
+		Server: &sdkConfig.ServerConfig{},
+		VPC: &sdkConfig.VPCProviderConfig{
+			Enabled:              true,
+			VPCBlockProviderName: vpcBlockProviderName,
+			G2EndpointURL:        endpoint,
+			G2TokenExchangeURL:   "https://iam.cloud.ibm.com",
+			G2ResourceGroupID:    cfg.ResourceGroup,
+			G2APIVersion:         apiVersion,
+			APIVersion:           apiVersion,
+		},
+	}
+}
+
 func newProviderWithConfig(cfg Config) (*IBMCloudProvider, error) {
 	// Instantiate a production Zap logger for the SDK
 	zapLogger, err := zap.NewProduction()
@@ -210,23 +250,30 @@ func newProviderWithConfig(cfg Config) (*IBMCloudProvider, error) {
 		zapLogger = zap.NewExample()
 	}
 
-	// Instantiate Kubernetes client from service account
+	// Use the resource group from the StorageClass. If it is not set there,
+	// fall back to the IBMCLOUD_RESOURCE_GROUP_ID environment variable.
+	cfg.ResourceGroup, err = resolveResourceGroup(cfg.ResourceGroup, os.Getenv(resourceGroupEnv))
+	if err != nil {
+		return nil, err
+	}
+
 	k8sClient, err := k8sUtils.Getk8sClientSet()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Kubernetes clientset: %w", err)
 	}
 
-	// Initialize the official community IBM Cloud Storage Provider
-	storageProvider, err := cloudProvider.NewIBMCloudStorageProvider("", &k8sClient, zapLogger)
+	conf := buildSDKConfig(cfg)
+	registry, err := providerUtil.InitProviders(&vpcconfig.VPCBlockConfig{
+		VPCConfig:    conf.VPC,
+		ServerConfig: conf.Server,
+	}, &k8sClient, zapLogger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create NewIBMCloudStorageProvider: %w", err)
+		return nil, fmt.Errorf("failed to initialize IBM VPC provider: %w", err)
 	}
-	// The SDK requires a resource group in its request. Upstream defaults it
-	// from this same provider configuration when the StorageClass omits it.
-	var errRG error
-	cfg.ResourceGroup, errRG = resolveResourceGroup(cfg.ResourceGroup, storageProvider.GetConfig().VPC.G2ResourceGroupID)
-	if errRG != nil {
-		return nil, errRG
+	storageProvider := &cloudProvider.IBMCloudStorageProvider{
+		ProviderName:   vpcBlockProviderName,
+		ProviderConfig: conf,
+		Registry:       registry,
 	}
 
 	// Retrieve the active VPC Storage Provider Session
@@ -242,14 +289,13 @@ func newProviderWithConfig(cfg Config) (*IBMCloudProvider, error) {
 }
 
 // resolveResourceGroup returns the explicit StorageClass resource group if set,
-// or falls back to the cluster's configured resource group from the SDK config.
-// Returns ErrInvalidParameters only when neither is available.
+// or falls back to the one configured in the driver's environment.
 func resolveResourceGroup(explicit, configured string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
 	if configured == "" {
-		return "", fmt.Errorf("%w: resourceGroup is omitted and the provider has no g2_resource_group_id; configure either value", caaProvider.ErrInvalidParameters)
+		return "", fmt.Errorf("%w: resourceGroup is omitted and IBMCLOUD_RESOURCE_GROUP_ID is not set; configure either value", caaProvider.ErrInvalidParameters)
 	}
 	return configured, nil
 }
@@ -636,15 +682,23 @@ func (p *IBMCloudProvider) ExpandVolume(ctx context.Context, volumeID string, ne
 		return fmt.Errorf("cannot expand volume %s: %w", volumeID, err)
 	}
 
-	newSizeGB := int((newSizeBytes + (1024*1024*1024 - 1)) / (1024 * 1024 * 1024))
-	logger.Printf("Expanding IBM VPC volume %s (vpc-id=%s) to %d GB", volumeID, volInfo.Path, newSizeGB)
-
-	volRequest := provider.Volume{
-		VolumeID: volInfo.Path,
-		Capacity: &newSizeGB,
+	allocated, err := p.NormalizeCapacity(newSizeBytes)
+	if err != nil {
+		return err
 	}
 
-	err = p.session.UpdateVolume(volRequest)
+	// The disk may already be bigger than the PVC (IBM has a minimum size), so skip if no growth is needed.
+	if volInfo.SizeBytes >= allocated {
+		logger.Printf("IBM VPC volume %s (vpc-id=%s) is already %d GB, nothing to expand", volumeID, volInfo.Path, volInfo.SizeBytes/gib)
+		return nil
+	}
+	logger.Printf("Expanding IBM VPC volume %s (vpc-id=%s) to %d GB", volumeID, volInfo.Path, allocated/gib)
+
+	// Capacity is in bytes: the SDK converts it to GB before calling the API.
+	_, err = p.session.ExpandVolume(provider.ExpandVolumeRequest{
+		VolumeID: volInfo.Path,
+		Capacity: allocated,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to expand volume via ibmcloud-volume-vpc SDK: %w", err)
 	}

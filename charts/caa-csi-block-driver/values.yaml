@@ -48,15 +48,20 @@ azure:
   location: ""
   diskSku: StandardSSD_LRS
 
-# IBM Cloud VPC Block provider settings. The driver reads the
-# storage-secret-store Secret and cluster-info ConfigMap from the release
-# namespace; IKS and ROKS create both in kube-system only.
+# IBM Cloud VPC Block provider settings. The driver reads its credentials from
+# a Secret named ibm-cloud-credentials that you create in the release namespace
+# (API key or trusted profile; see the README).
 ibmcloud:
   region: ""
+  # must be the zone CAA creates PodVMs in (IBMCLOUD_ZONE in the CAA
+  # configuration); CAA refuses to attach a volume from any other zone
   zone: ""
   profile: general-purpose
-  # resource group ID; empty uses the group from storage-secret-store
+  # resource group ID (required)
   resourceGroup: ""
+  # optional VPC API endpoint override, for example the private endpoint
+  # https://<region>.private.iaas.cloud.ibm.com; empty uses the public one
+  vpcEndpointURL: ""
   # only for the custom and sdp profiles
   iops: ""
   # Mbps, only for the sdp profile
@@ -67,15 +72,6 @@ ibmcloud:
   encryptionKey: ""
   # comma-separated extra tags for each volume
   tags: ""
-  secretSidecar:
-    image: icr.io/obs/armada-storage-secret:v1.3.69
-    resources:
-      requests:
-        cpu: 10m
-        memory: 20Mi
-      limits:
-        cpu: 40m
-        memory: 80Mi
 
 # Libvirt provider settings
 libvirt:

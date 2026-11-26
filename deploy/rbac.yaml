@@ -25,16 +25,6 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["list", "watch", "create", "update", "patch"]
-  # The IBM provider reads its configuration from storage-secret-store.
-  - apiGroups: [""]
-    resources: ["secrets"]
-    resourceNames: ["storage-secret-store"]
-    verbs: ["get", "list", "watch"]
-  # The IBM provider reads cluster metadata when IKS integration is enabled.
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    resourceNames: ["cluster-info"]
-    verbs: ["get"]
   - apiGroups: ["storage.k8s.io"]
     resources: ["csinodes"]
     verbs: ["get", "list", "watch"]
@@ -76,3 +66,30 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: system:openshift:scc:privileged
+---
+# The IBM Cloud provider reads the user-created ibm-cloud-credentials Secret
+# from the driver's namespace. Other providers do not use it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: caa-csi-provisioner-ibmcloud
+  namespace: caa-csi-block
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["ibm-cloud-credentials"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: caa-csi-provisioner-ibmcloud
+  namespace: caa-csi-block
+subjects:
+  - kind: ServiceAccount
+    name: caa-csi-provisioner
+    namespace: caa-csi-block
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: caa-csi-provisioner-ibmcloud
