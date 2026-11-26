@@ -47,11 +47,12 @@ func applyTopologyParams(params map[string]string, req *csi.TopologyRequirement)
 		return
 	}
 
-	if provider == "aws" {
+	switch provider {
+	case "aws":
 		if params["awsAvailabilityZone"] == "" {
 			params["awsAvailabilityZone"] = zone
 		}
-	} else if provider == "ibmcloud" {
+	case "ibmcloud":
 		if params["zone"] == "" && params["ibmZone"] == "" {
 			params["zone"] = zone
 		}
