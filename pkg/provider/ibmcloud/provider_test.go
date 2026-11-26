@@ -502,23 +502,23 @@ func TestRecoveryOwnershipAndPagination(t *testing.T) {
 }
 
 func TestBuildSDKConfig(t *testing.T) {
-	t.Setenv(vpcEndpointEnv, "")
+	t.Setenv(vpcEndpointEnv, "https://mock-vpc.example.com")
 	t.Setenv(vpcAPIVersionEnv, "")
 	conf := buildSDKConfig(Config{Region: "eu-de", ResourceGroup: "rg-1"})
 	if conf.Server == nil || conf.VPC == nil || conf.IKS != nil {
 		t.Fatalf("unexpected sections: %+v", conf)
 	}
 	if !conf.VPC.Enabled || conf.VPC.VPCBlockProviderName != vpcBlockProviderName ||
-		conf.VPC.G2EndpointURL != "https://eu-de.iaas.cloud.ibm.com" ||
+		conf.VPC.G2EndpointURL != "https://mock-vpc.example.com" ||
 		conf.VPC.G2ResourceGroupID != "rg-1" || conf.VPC.G2APIVersion != defaultVPCAPIVersion ||
 		conf.VPC.G2APIKey != "" {
 		t.Fatalf("unexpected VPC config: %+v", conf.VPC)
 	}
 
-	t.Setenv(vpcEndpointEnv, "https://eu-de.private.iaas.cloud.ibm.com")
+	t.Setenv(vpcEndpointEnv, "https://mock-vpc-override.example.com")
 	t.Setenv(vpcAPIVersionEnv, "2025-01-01")
 	conf = buildSDKConfig(Config{Region: "eu-de", ResourceGroup: "rg-1"})
-	if conf.VPC.G2EndpointURL != "https://eu-de.private.iaas.cloud.ibm.com" || conf.VPC.G2APIVersion != "2025-01-01" {
+	if conf.VPC.G2EndpointURL != "https://mock-vpc-override.example.com" || conf.VPC.G2APIVersion != "2025-01-01" {
 		t.Fatalf("overrides ignored: %+v", conf.VPC)
 	}
 }
