@@ -30,7 +30,7 @@ test-verbose: build ## Run csi-sanity conformance tests (verbose)
 	@hack/run-csi-sanity.sh --ginkgo.v
 
 lint: ## Run go vet
-	go vet ./...
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go vet ./...
 
 fmt: ## Run gofmt
 	gofmt -w -s .

@@ -3,7 +3,23 @@
 
 package provider
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+const (
+	ProviderAWS      = "aws"
+	ProviderAzure    = "azure"
+	ProviderLibvirt  = "libvirt"
+	ProviderIBMCloud = "ibmcloud"
+)
+
+var (
+	ErrInvalidParameters   = errors.New("invalid provider parameters")
+	ErrVolumeNotFound      = errors.New("volume not found")
+	ErrVolumeAlreadyExists = errors.New("volume exists with incompatible properties")
+)
 
 // VolumeInfo holds provider-agnostic metadata about a block volume.
 type VolumeInfo struct {

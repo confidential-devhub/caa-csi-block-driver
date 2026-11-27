@@ -72,6 +72,17 @@ func (cs *controllerServer) resolveProviderParams(secrets map[string]string) map
 	return cs.store.BootstrapParams()
 }
 
+// deleteProviderParams preserves the cloud-native volume ID recorded at
+// creation time. Providers that understand cloud-volume-path can then delete
+// the exact disk instead of relying on a potentially ambiguous name lookup.
+func deleteProviderParams(rec *volumeRecord) map[string]string {
+	params := cloneParams(rec.Params)
+	if rec.Path != "" {
+		params["cloud-volume-path"] = rec.Path
+	}
+	return params
+}
+
 // volumeLookupStatus maps store/lookup errors to gRPC status codes:
 // missing record → NotFound; corrupt/unreadable/other → Internal.
 func volumeLookupStatus(kind, volumeID string, err error) error {
@@ -225,7 +236,7 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 
 	var params map[string]string
 	if rec, err := cs.loadVolumeRecord(volumeID); err == nil {
-		params = rec.Params
+		params = deleteProviderParams(rec)
 	} else {
 		params = cs.resolveProviderParams(req.GetSecrets())
 		if params == nil {
@@ -356,19 +367,50 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 		return nil, status.Error(codes.InvalidArgument, "Snapshot name missing")
 	}
 
+	var p provider.BlockVolumeProvider
+	var providerName string
 	rec, err := cs.loadVolumeRecord(sourceVolumeID)
-	if err != nil {
-		return nil, volumeLookupStatus("source volume", sourceVolumeID, err)
-	}
-
-	p, err := provider.NewBlockVolumeProvider(rec.Params)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to create provider: %v", err)
+	if err == nil {
+		providerName = rec.Provider
+		p, err = provider.NewBlockVolumeProvider(rec.Params)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to create provider: %v", err)
+		}
+	} else {
+		fallbackParams := cloneParams(req.GetParameters())
+		if fallbackParams == nil || fallbackParams["cloudProvider"] == "" {
+			fallbackParams = cs.resolveProviderParams(req.GetSecrets())
+		}
+		if fallbackParams == nil {
+			return nil, volumeLookupStatus("source volume", sourceVolumeID, err)
+		}
+		providerName = fallbackParams["cloudProvider"]
+		p, err = provider.NewBlockVolumeProvider(fallbackParams)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to create provider: %v", err)
+		}
+		volInfo, getErr := p.GetVolumeInfo(ctx, sourceVolumeID)
+		if getErr != nil {
+			if errors.Is(getErr, provider.ErrVolumeNotFound) {
+				return nil, status.Errorf(codes.NotFound, "source volume %s not found", sourceVolumeID)
+			}
+			return nil, status.Errorf(codes.Internal, "failed to verify source volume %s: %v", sourceVolumeID, getErr)
+		}
+		if volInfo == nil {
+			return nil, status.Errorf(codes.NotFound, "source volume %s not found", sourceVolumeID)
+		}
+		_ = cs.store.Save(&volumeRecord{
+			VolumeID:      sourceVolumeID,
+			Provider:      volInfo.Provider,
+			Path:          volInfo.Path,
+			CapacityBytes: volInfo.SizeBytes,
+			Params:        fallbackParams,
+		})
 	}
 
 	snapshotter, ok := p.(provider.VolumeSnapshotter)
 	if !ok {
-		return nil, status.Errorf(codes.Unimplemented, "provider %s does not support snapshots", rec.Provider)
+		return nil, status.Errorf(codes.Unimplemented, "provider %s does not support snapshots", providerName)
 	}
 
 	// Targeted lookup by name to enforce uniqueness per CSI spec without listing all snapshots.
@@ -449,11 +491,18 @@ func (cs *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnap
 	if sourceVolumeID != "" {
 		rec, err := cs.loadVolumeRecord(sourceVolumeID)
 		if err != nil {
-			return nil, volumeLookupStatus("source volume", sourceVolumeID, err)
+			params = cloneParams(req.GetSecrets())
+			if params == nil || params["cloudProvider"] == "" {
+				params = cs.store.BootstrapParams()
+			}
+			if params == nil {
+				return nil, volumeLookupStatus("source volume", sourceVolumeID, err)
+			}
+		} else {
+			params = rec.Params
 		}
-		params = rec.Params
 	} else {
-		params = cs.store.BootstrapParams()
+		params = cs.resolveProviderParams(req.GetSecrets())
 	}
 
 	if params == nil {

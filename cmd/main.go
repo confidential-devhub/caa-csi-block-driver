@@ -14,6 +14,7 @@ import (
 
 	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/aws"
 	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/azure"
+	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/ibmcloud"
 	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/libvirt"
 )
 
