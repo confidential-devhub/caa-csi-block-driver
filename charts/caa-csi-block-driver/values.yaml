@@ -52,7 +52,7 @@ azure:
 
 # IBM Cloud VPC Block provider settings. The driver reads its credentials from
 # a Secret named ibm-cloud-credentials that you create in the release namespace
-# (API key or trusted profile; see the README).
+# (API key; see the README).
 ibmcloud:
   region: ""
   # must be the zone CAA creates PodVMs in (IBMCLOUD_ZONE in the CAA

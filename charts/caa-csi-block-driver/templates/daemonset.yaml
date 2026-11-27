@@ -160,12 +160,6 @@ spec:
             - mountPath: {{ .Values.libvirt.volumeDir }}
               name: libvirt-pool
             {{- end }}
-            {{- if eq .Values.provider "ibmcloud" }}
-            # service account token used for IBM Cloud trusted profile authentication
-            - mountPath: /var/run/secrets/tokens
-              name: vault-token
-              readOnly: true
-            {{- end }}
 
       volumes:
         - name: socket-dir
@@ -201,12 +195,4 @@ spec:
           hostPath:
             path: {{ .Values.libvirt.volumeDir }}
             type: DirectoryOrCreate
-        {{- end }}
-        {{- if eq .Values.provider "ibmcloud" }}
-        - name: vault-token
-          projected:
-            sources:
-              - serviceAccountToken:
-                  path: vault-token
-                  expirationSeconds: 600
         {{- end }}
