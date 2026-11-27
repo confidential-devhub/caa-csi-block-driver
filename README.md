@@ -18,7 +18,7 @@ for volume attachment to PodVMs.
 The following applies to every provider:
 
 - The manifests and Helm chart deploy the `csi-provisioner` and
-  `node-driver-registrar` sidecars. The IBM Cloud VPC install also deploys
+  `node-driver-registrar` sidecars. The IBM Cloud VPC manifests also deploy
   `csi-snapshotter`, because it is the only provider that implements
   snapshots. `csi-resizer` is not deployed for any provider, so volume
   expansion is not available.
@@ -209,45 +209,9 @@ kubectl apply -f ibm-cloud-credentials.yaml
 The API key needs permission to manage VPC block storage
 volumes and snapshots in the resource group you use.
 
-Install the chart:
-
-```bash
-helm install caa-csi charts/caa-csi-block-driver \
-  --namespace caa-csi-block \
-  --set namespace.create=false \
-  --set provider=ibmcloud \
-  --set kubeletDir=/var/data/kubelet \
-  --set image.repository=<your-registry>/caa-csi-block-driver \
-  --set image.tag=<your-tag> \
-  --set ibmcloud.resourceGroup=<resource-group-id> \
-  --set ibmcloud.region=us-south \
-  --set ibmcloud.zone=us-south-1 \
-  --set storageClass.name=caa-csi-ibmcloud \
-  --set storageClass.allowVolumeExpansion=false \
-  --set serviceAccount.name=caa-csi-provisioner
-```
-
-The chart defaults to `provider: aws`, so `provider=ibmcloud` is required, as
-are `ibmcloud.region`, `ibmcloud.zone` and `ibmcloud.resourceGroup`. Worker
-nodes keep kubelet data under `/var/data/kubelet`, which is why `kubeletDir` is
-set.
-
-`ibmcloud.zone` must be the zone CAA creates PodVMs in (`IBMCLOUD_ZONE` in the CAA
-configuration). CAA refuses to attach a volume from any other zone, and the pod
-stays in `ContainerCreating`.
-
-The driver calls the public VPC endpoint for the region. To use the private
-endpoint, add `--set ibmcloud.vpcEndpointURL=https://<region>.private.iaas.cloud.ibm.com`.
-
-On ROKS, grant the privileged SCC to the service account:
-
-```bash
-oc adm policy add-scc-to-user privileged -z caa-csi-provisioner -n caa-csi-block
-```
-
 #### Install with manifests
 
-As an alternative to the chart, after creating the Secret above:
+After creating the Secret above:
 
 ```bash
 kubectl apply -f deploy/rbac.yaml
@@ -260,7 +224,7 @@ kubectl apply -f deploy/daemonset-ibmcloud.yaml
 kubectl apply -f deploy/storageclass-ibmcloud.yaml
 ```
 
-`deploy/rbac.yaml` already grants the privileged SCC on OpenShift, so the `oc adm policy` step is not needed here.
+`deploy/rbac.yaml` already grants the privileged SCC on OpenShift.
 
 #### StorageClass parameters
 
@@ -286,7 +250,7 @@ for the `sdp` profile.
 
 #### Snapshots
 
-The IBM Cloud VPC install runs the `csi-snapshotter` sidecar, so you can take a
+The IBM Cloud VPC manifests run the `csi-snapshotter` sidecar, so you can take a
 snapshot of a volume and create a new volume from it. The cluster must already
 have the snapshot CRDs and the snapshot controller (OpenShift ships both).
 
@@ -334,12 +298,6 @@ spec:
 kubectl get storageclass caa-csi-ibmcloud
 kubectl get pvc <pvc-name>     # expect Bound
 kubectl get pod <pod-name>     # expect Running
-
-# Helm install
-kubectl get pods -n caa-csi-block -l app.kubernetes.io/instance=caa-csi
-kubectl logs -n caa-csi-block -l app.kubernetes.io/name=caa-csi-block-driver -c caa-csi-block-driver
-
-# Manifest install
 kubectl get pods -n caa-csi-block -l app=caa-csi-block
 kubectl logs -n caa-csi-block -l app=caa-csi-block -c caa-csi-block-driver
 ```

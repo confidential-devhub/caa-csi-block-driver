@@ -16,18 +16,12 @@ spec:
         {{- include "caa-csi.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "caa-csi.serviceAccountName" . }}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       containers:
         - name: csi-provisioner
           image: {{ .Values.sidecarImages.provisioner }}
           args:
-            - "--v=3"
-            - "--timeout=600s"
+            - "-v=3"
             - "--csi-address=/csi/csi.sock"
-            - "--leader-election=true"
             - "--worker-threads=5"
             - "--feature-gates=Topology=true"
           env:
@@ -53,34 +47,12 @@ spec:
             - mountPath: /csi
               name: socket-dir
 
-        {{- if eq .Values.provider "ibmcloud" }}
-        # only the IBM Cloud provider implements snapshots; needs the snapshot
-        # CRDs and snapshot-controller on the cluster
-        - name: csi-snapshotter
-          image: {{ .Values.sidecarImages.snapshotter }}
-          args:
-            - "--v=3"
-            - "--timeout=600s"
-            - "--csi-address=/csi/csi.sock"
-            - "--leader-election=true"
-          {{- with .Values.resources.snapshotter }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          securityContext:
-            privileged: false
-            allowPrivilegeEscalation: false
-          volumeMounts:
-            - mountPath: /csi
-              name: socket-dir
-
-        {{- end }}
         - name: node-driver-registrar
           image: {{ .Values.sidecarImages.nodeDriverRegistrar }}
           args:
             - "--v=3"
             - "--csi-address=/csi/csi.sock"
-            - "--kubelet-registration-path={{ .Values.kubeletDir }}/plugins/caa-csi-block/csi.sock"
+            - "--kubelet-registration-path=/var/lib/kubelet/plugins/caa-csi-block/csi.sock"
           env:
             - name: KUBE_NODE_NAME
               valueFrom:
@@ -130,10 +102,6 @@ spec:
                   key: AWS_SECRET_ACCESS_KEY
             {{- end }}
             {{- end }}
-            {{- if and (eq .Values.provider "ibmcloud") .Values.ibmcloud.vpcEndpointURL }}
-            - name: IBMCLOUD_VPC_ENDPOINT_URL
-              value: {{ .Values.ibmcloud.vpcEndpointURL | quote }}
-            {{- end }}
           {{- with .Values.resources.driver }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -143,10 +111,10 @@ spec:
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
-            - mountPath: {{ .Values.kubeletDir }}/pods
+            - mountPath: /var/lib/kubelet/pods
               name: mountpoint-dir
               mountPropagation: Bidirectional
-            - mountPath: {{ .Values.kubeletDir }}/plugins
+            - mountPath: /var/lib/kubelet/plugins
               name: plugins-dir
               mountPropagation: Bidirectional
             - mountPath: /run/kata-containers/shared/direct-volumes
@@ -164,19 +132,19 @@ spec:
       volumes:
         - name: socket-dir
           hostPath:
-            path: {{ .Values.kubeletDir }}/plugins/caa-csi-block
+            path: /var/lib/kubelet/plugins/caa-csi-block
             type: DirectoryOrCreate
         - name: mountpoint-dir
           hostPath:
-            path: {{ .Values.kubeletDir }}/pods
+            path: /var/lib/kubelet/pods
             type: DirectoryOrCreate
         - name: registration-dir
           hostPath:
-            path: {{ .Values.kubeletDir }}/plugins_registry
+            path: /var/lib/kubelet/plugins_registry
             type: Directory
         - name: plugins-dir
           hostPath:
-            path: {{ .Values.kubeletDir }}/plugins
+            path: /var/lib/kubelet/plugins
             type: Directory
         - name: shared-directvols
           hostPath:
