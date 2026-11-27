@@ -1,4 +1,4 @@
-# Cloud provider: aws, azure, ibmcloud, or libvirt
+# Cloud provider: aws, azure, or libvirt
 provider: aws
 
 nameOverride: ""
@@ -9,24 +9,16 @@ image:
   tag: 0.2.0
   pullPolicy: IfNotPresent
 
-imagePullSecrets: []
-
 namespace:
   name: caa-csi-block
   create: true
 
 sidecarImages:
-  provisioner: registry.k8s.io/sig-storage/csi-provisioner:v6.2.0
+  provisioner: registry.k8s.io/sig-storage/csi-provisioner:v3.6.0
   nodeDriverRegistrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.9.0
-  # deployed for the ibmcloud provider only
-  snapshotter: registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
 
 csiDriver:
   name: caa-csi-block.csi.confidentialcontainers.io
-
-# Kubelet root directory on the nodes. IBM Cloud IKS and ROKS on VPC use
-# /var/data/kubelet.
-kubeletDir: /var/lib/kubelet
 
 # AWS provider settings
 aws:
@@ -49,31 +41,6 @@ azure:
   resourceGroup: ""
   location: ""
   diskSku: StandardSSD_LRS
-
-# IBM Cloud VPC Block provider settings. The driver reads its credentials from
-# a Secret named ibm-cloud-credentials that you create in the release namespace
-# (API key or trusted profile; see the README).
-ibmcloud:
-  region: ""
-  # must be the zone CAA creates PodVMs in (IBMCLOUD_ZONE in the CAA
-  # configuration); CAA refuses to attach a volume from any other zone
-  zone: ""
-  profile: general-purpose
-  # resource group ID (required)
-  resourceGroup: ""
-  # optional VPC API endpoint override, for example the private endpoint
-  # https://<region>.private.iaas.cloud.ibm.com; empty uses the public one
-  vpcEndpointURL: ""
-  # only for the custom and sdp profiles
-  iops: ""
-  # Mbps, only for the sdp profile
-  throughput: ""
-  billingType: hourly
-  encrypted: false
-  # Key Protect or Hyper Protect key CRN, used when encrypted=true
-  encryptionKey: ""
-  # comma-separated extra tags for each volume
-  tags: ""
 
 # Libvirt provider settings
 libvirt:
