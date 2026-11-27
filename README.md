@@ -13,7 +13,7 @@ for volume attachment to PodVMs.
 | **AWS** | EBS Volumes | IAM role or access key credentials | Supported |
 | **Azure** | Managed Disks | DefaultAzureCredential (Workload Identity, Managed Identity, env vars) | Supported |
 | **Libvirt** | Raw disk files | N/A (local) | Supported (dev/test) |
-| **IBM Cloud VPC** | VPC Block Storage | API key or trusted profile in a Kubernetes Secret | Supported |
+| **IBM Cloud VPC** | VPC Block Storage | API key in a Kubernetes Secret | Supported |
 
 The following applies to every provider:
 
@@ -201,36 +201,12 @@ Then apply it:
 kubectl apply -f ibm-cloud-credentials.yaml
 ```
 
-Or, on IKS and ROKS, with an IAM trusted profile instead of an API key. The
-trusted profile must trust the driver's service account
-(`caa-csi-provisioner` in namespace `caa-csi-block`):
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ibm-cloud-credentials
-  namespace: caa-csi-block
-type: Opaque
-stringData:
-  ibm-credentials.env: |
-    IBMCLOUD_AUTHTYPE=pod-identity
-    IBMCLOUD_PROFILEID=<trusted-profile-id>
-```
-
-Apply it:
-
-```bash
-kubectl apply -f ibm-cloud-credentials.yaml
-```
-
 | Line | Value |
 |------|-------|
-| `IBMCLOUD_AUTHTYPE` | `iam` for an API key, `pod-identity` for a trusted profile |
-| `IBMCLOUD_APIKEY` | IBM Cloud API key; required with `iam` |
-| `IBMCLOUD_PROFILEID` | Trusted profile ID; required with `pod-identity` |
+| `IBMCLOUD_AUTHTYPE` | `iam` |
+| `IBMCLOUD_APIKEY` | IBM Cloud API key |
 
-The API key or trusted profile needs permission to manage VPC block storage
+The API key needs permission to manage VPC block storage
 volumes and snapshots in the resource group you use.
 
 #### Install with manifests

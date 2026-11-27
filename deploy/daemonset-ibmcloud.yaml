@@ -102,10 +102,6 @@ spec:
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
-            # Service account token used for IBM Cloud trusted profile authentication.
-            - mountPath: /var/run/secrets/tokens
-              name: vault-token
-              readOnly: true
             - mountPath: /var/data/kubelet/pods
               name: mountpoint-dir
               mountPropagation: Bidirectional
@@ -120,12 +116,6 @@ spec:
               name: bootstrap-params
               readOnly: true
       volumes:
-        - name: vault-token
-          projected:
-            sources:
-              - serviceAccountToken:
-                  path: vault-token
-                  expirationSeconds: 600
         - name: socket-dir
           hostPath:
             path: /var/data/kubelet/plugins/caa-csi-block
