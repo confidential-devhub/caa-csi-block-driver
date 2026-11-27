@@ -11,10 +11,6 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "update"]
-  # The provisioner reads both objects to resolve the snapshot handle for restore.
-  - apiGroups: ["snapshot.storage.k8s.io"]
-    resources: ["volumesnapshots", "volumesnapshotcontents"]
-    verbs: ["get"]
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get", "list", "watch"]
@@ -48,68 +44,3 @@ roleRef:
   kind: ClusterRole
   name: {{ include "caa-csi.fullname" . }}
   apiGroup: rbac.authorization.k8s.io
-{{- if eq .Values.provider "ibmcloud" }}
----
-# used by the csi-snapshotter sidecar
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ include "caa-csi.fullname" . }}-snapshotter
-  labels:
-    {{- include "caa-csi.labels" . | nindent 4 }}
-rules:
-  - apiGroups: ["snapshot.storage.k8s.io"]
-    resources: ["volumesnapshotclasses"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["snapshot.storage.k8s.io"]
-    resources: ["volumesnapshotcontents"]
-    verbs: ["get", "list", "watch", "update", "patch"]
-  - apiGroups: ["snapshot.storage.k8s.io"]
-    resources: ["volumesnapshotcontents/status"]
-    verbs: ["update", "patch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: {{ include "caa-csi.fullname" . }}-snapshotter
-  labels:
-    {{- include "caa-csi.labels" . | nindent 4 }}
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "caa-csi.serviceAccountName" . }}
-    namespace: {{ include "caa-csi.namespace" . }}
-roleRef:
-  kind: ClusterRole
-  name: {{ include "caa-csi.fullname" . }}-snapshotter
-  apiGroup: rbac.authorization.k8s.io
----
-# the IBM libraries read the user-created ibm-cloud-credentials Secret from the pod's own namespace
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: {{ include "caa-csi.fullname" . }}-ibmcloud
-  namespace: {{ include "caa-csi.namespace" . }}
-  labels:
-    {{- include "caa-csi.labels" . | nindent 4 }}
-rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    resourceNames: ["ibm-cloud-credentials"]
-    verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: {{ include "caa-csi.fullname" . }}-ibmcloud
-  namespace: {{ include "caa-csi.namespace" . }}
-  labels:
-    {{- include "caa-csi.labels" . | nindent 4 }}
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "caa-csi.serviceAccountName" . }}
-    namespace: {{ include "caa-csi.namespace" . }}
-roleRef:
-  kind: Role
-  name: {{ include "caa-csi.fullname" . }}-ibmcloud
-  apiGroup: rbac.authorization.k8s.io
-{{- end }}
