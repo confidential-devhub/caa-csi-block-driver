@@ -50,6 +50,39 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 {{- if eq .Values.provider "ibmcloud" }}
 ---
+# used by the csi-snapshotter sidecar
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "caa-csi.fullname" . }}-snapshotter
+  labels:
+    {{- include "caa-csi.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents/status"]
+    verbs: ["update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "caa-csi.fullname" . }}-snapshotter
+  labels:
+    {{- include "caa-csi.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "caa-csi.serviceAccountName" . }}
+    namespace: {{ include "caa-csi.namespace" . }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "caa-csi.fullname" . }}-snapshotter
+  apiGroup: rbac.authorization.k8s.io
+---
 # the IBM libraries read the user-created ibm-cloud-credentials Secret from the pod's own namespace
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

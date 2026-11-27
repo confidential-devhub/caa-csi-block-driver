@@ -18,6 +18,8 @@ namespace:
 sidecarImages:
   provisioner: registry.k8s.io/sig-storage/csi-provisioner:v6.2.0
   nodeDriverRegistrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.9.0
+  # deployed for the ibmcloud provider only
+  snapshotter: registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
 
 csiDriver:
   name: caa-csi-block.csi.confidentialcontainers.io

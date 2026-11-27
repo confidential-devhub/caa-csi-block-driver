@@ -53,6 +53,28 @@ spec:
             - mountPath: /csi
               name: socket-dir
 
+        {{- if eq .Values.provider "ibmcloud" }}
+        # only the IBM Cloud provider implements snapshots; needs the snapshot
+        # CRDs and snapshot-controller on the cluster
+        - name: csi-snapshotter
+          image: {{ .Values.sidecarImages.snapshotter }}
+          args:
+            - "--v=3"
+            - "--timeout=600s"
+            - "--csi-address=/csi/csi.sock"
+            - "--leader-election=true"
+          {{- with .Values.resources.snapshotter }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+
+        {{- end }}
         - name: node-driver-registrar
           image: {{ .Values.sidecarImages.nodeDriverRegistrar }}
           args:

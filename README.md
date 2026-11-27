@@ -18,8 +18,10 @@ for volume attachment to PodVMs.
 The following applies to every provider:
 
 - The manifests and Helm chart deploy the `csi-provisioner` and
-  `node-driver-registrar` sidecars only. They do not deploy `csi-snapshotter`
-  or `csi-resizer`.
+  `node-driver-registrar` sidecars. The IBM Cloud VPC install also deploys
+  `csi-snapshotter`, because it is the only provider that implements
+  snapshots. `csi-resizer` is not deployed for any provider, so volume
+  expansion is not available.
 - `ControllerPublishVolume` / `ControllerUnpublishVolume` are not implemented by
   design: CAA attaches disks through the cloud API.
 - `ListVolumes`, `GetCapacity`, `ModifyVolume` and the group controller service
@@ -305,6 +307,50 @@ accepted as fallbacks for the matching keys.
 
 Requested sizes are rounded up to a whole GiB. The minimum is 10 GiB, or 1 GiB
 for the `sdp` profile.
+
+#### Snapshots
+
+The IBM Cloud VPC install runs the `csi-snapshotter` sidecar, so you can take a
+snapshot of a volume and create a new volume from it. The cluster must already
+have the snapshot CRDs and the snapshot controller (OpenShift ships both).
+
+```yaml
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: caa-csi-ibmcloud-snapshot
+driver: caa-csi-block.csi.confidentialcontainers.io
+deletionPolicy: Delete
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: my-snapshot
+spec:
+  volumeSnapshotClassName: caa-csi-ibmcloud-snapshot
+  source:
+    persistentVolumeClaimName: <pvc-name>
+```
+
+To restore, create a PVC with the snapshot as its `dataSource`:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-restore
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: caa-csi-ibmcloud
+  resources:
+    requests:
+      storage: 20Gi
+  dataSource:
+    name: my-snapshot
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+```
 
 #### Verify
 
